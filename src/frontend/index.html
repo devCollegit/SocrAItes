@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SocrAItes — 소크라테스식 학습 코치</title>
+    <meta name="description" content="AI 소크라테스식 학습 코치와 함께 강의자료를 깊이 있게 이해하고 비판적 사고를 기르세요.">
+    <link rel="stylesheet" href="/frontend/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <!-- marked.js for markdown rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+<body>
+    <!-- Background ambient blobs -->
+    <div class="ambient-bg">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+    </div>
+
+    <div class="app-container">
+        <!-- ==================== SIDEBAR ==================== -->
+        <aside class="sidebar" id="sidebar">
+            <!-- Logo -->
+            <div class="sidebar-logo">
+                <div class="logo-icon">
+                    <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <circle cx="20" cy="20" r="18" stroke="url(#logoGrad)" stroke-width="2"/>
+                        <path d="M13 15c0-3.866 3.134-7 7-7s7 3.134 7 7c0 2.887-1.749 5.374-4.273 6.527L22 26h-4l-.273-4.473C15.203 20.374 13 17.887 13 15z" fill="url(#logoGrad2)"/>
+                        <circle cx="20" cy="30" r="2" fill="url(#logoGrad)"/>
+                        <defs>
+                            <linearGradient id="logoGrad" x1="2" y1="2" x2="38" y2="38">
+                                <stop offset="0%" stop-color="#d4af37"/>
+                                <stop offset="100%" stop-color="#f5d673"/>
+                            </linearGradient>
+                            <linearGradient id="logoGrad2" x1="13" y1="8" x2="27" y2="28">
+                                <stop offset="0%" stop-color="#d4af37"/>
+                                <stop offset="100%" stop-color="#f5d673"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                </div>
+                <div class="logo-text">
+                    <h1>SocrAItes</h1>
+                    <span>Learning Coach</span>
+                </div>
+                <button class="sidebar-toggle" id="sidebar-toggle" title="사이드바 접기">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M11 19l-7-7 7-7M18 19l-7-7 7-7"/>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Socratic Depth -->
+            <div class="sidebar-section">
+                <div class="section-label">
+                    <svg viewBox="0 0 20 20" fill="currentColor"><path d="M9 4.804A7.968 7.968 0 005.5 4c-1.255 0-2.443.29-3.5.804v10A7.969 7.969 0 015.5 14c1.396 0 2.694.37 3.809.967A7.978 7.978 0 0112.5 14c1.255 0 2.443.29 3.5.804v-10A7.968 7.968 0 0012.5 4c-1.255 0-2.443.29-3.5.804V12a1 1 0 11-2 0V4.804z"/></svg>
+                    소크라테스식 깊이
+                </div>
+                <div class="depth-selector" id="depth-selector">
+                    <button class="depth-btn" data-depth="0" id="depth-btn-0">
+                        <span class="depth-icon">💡</span>
+                        <span class="depth-name">Light</span>
+                        <span class="depth-sub">힌트 위주</span>
+                    </button>
+                    <button class="depth-btn active" data-depth="1" id="depth-btn-1">
+                        <span class="depth-icon">🔍</span>
+                        <span class="depth-name">Standard</span>
+                        <span class="depth-sub">반문 + 힌트</span>
+                    </button>
+                    <button class="depth-btn" data-depth="2" id="depth-btn-2">
+                        <span class="depth-icon">🔥</span>
+                        <span class="depth-name">Deep</span>
+                        <span class="depth-sub">순수 문답</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Session Stats -->
+            <div class="sidebar-section">
+                <div class="section-label">
+                    <svg viewBox="0 0 20 20" fill="currentColor"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+                    세션 현황
+                </div>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <span class="stat-value" id="stat-turns">0</span>
+                        <span class="stat-label">대화 횟수</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-value" id="stat-docs">0</span>
+                        <span class="stat-label">참조 문서</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Current Learning Plan -->
+            <div class="sidebar-section plan-section">
+                <div class="section-label">
+                    <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z" clip-rule="evenodd"/></svg>
+                    현재 학습 계획
+                </div>
+                <div class="plan-card" id="current-plan">
+                    <div class="plan-empty">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z"/></svg>
+                        <p>질문하면 AI가<br>학습 계획을 세웁니다</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Retrieved Docs -->
+            <div class="sidebar-section">
+                <div class="section-label">
+                    <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd"/></svg>
+                    참조한 자료
+                </div>
+                <div class="docs-list" id="docs-list">
+                    <div class="docs-empty">참조 자료 없음</div>
+                </div>
+            </div>
+
+            <!-- Sidebar Footer -->
+            <div class="sidebar-footer">
+                <button class="new-chat-btn" id="new-chat-btn">
+                    <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clip-rule="evenodd"/></svg>
+                    새 대화 시작
+                </button>
+                <button class="theme-toggle" id="theme-toggle" title="테마 전환">
+                    <svg id="theme-icon-dark" viewBox="0 0 20 20" fill="currentColor"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"/></svg>
+                    <svg id="theme-icon-light" viewBox="0 0 20 20" fill="currentColor" style="display:none"><path fill-rule="evenodd" d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" clip-rule="evenodd"/></svg>
+                </button>
+            </div>
+        </aside>
+
+        <!-- Sidebar collapse button (when closed) -->
+        <button class="sidebar-open-btn" id="sidebar-open-btn" title="사이드바 열기" style="display:none">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M13 5l7 7-7 7M6 5l7 7-7 7"/>
+            </svg>
+        </button>
+
+        <!-- ==================== MAIN CHAT ==================== -->
+        <main class="chat-area">
+            <!-- Header -->
+            <header class="chat-header">
+                <div class="agent-profile">
+                    <div class="agent-avatar-wrap">
+                        <div class="agent-avatar">
+                            <span>S</span>
+                            <div class="avatar-ring"></div>
+                        </div>
+                        <div class="online-dot"></div>
+                    </div>
+                    <div class="agent-meta">
+                        <h2>SocrAItes</h2>
+                        <span class="agent-status">
+                            <span class="status-pulse"></span>
+                            소크라테스식 학습 코치 · 온라인
+                        </span>
+                    </div>
+                </div>
+
+                <div class="header-actions">
+                    <div class="model-badge">
+                        <svg viewBox="0 0 20 20" fill="currentColor" style="width:14px;height:14px"><path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z"/></svg>
+                        GPT-4o-mini + RAG
+                    </div>
+                </div>
+            </header>
+
+            <!-- Welcome Banner -->
+            <div class="welcome-banner" id="welcome-banner">
+                <div class="welcome-inner">
+                    <div class="welcome-icon">🦉</div>
+                    <h3>안녕하세요, 저는 SocrAItes입니다</h3>
+                    <p>정답을 바로 알려주지 않아요. 대신 질문으로 스스로 답을 찾도록 도와드립니다.</p>
+                    <div class="quick-start-chips">
+                        <button class="chip" data-msg="CAP 정리가 뭔지 설명해줄 수 있어?">💬 CAP 정리란?</button>
+                        <button class="chip" data-msg="분산 시스템에서 일관성과 가용성의 트레이드오프를 이해하고 싶어">🔍 분산시스템 개념</button>
+                        <button class="chip" data-msg="오늘 공부할 내용을 정리해줘">📋 학습 계획 세우기</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Messages -->
+            <div id="chat-messages" class="messages-container"></div>
+
+            <!-- Input Area -->
+            <div class="input-area">
+                <div class="input-container">
+                    <div class="input-wrapper" id="input-wrapper">
+                        <div class="input-left">
+                            <input type="file" id="pdf-upload" accept=".pdf" style="display: none;">
+                            <button class="attach-btn" id="attach-btn" title="PDF 강의자료 업로드">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
+                                </svg>
+                            </button>
+                        </div>
+                        <textarea
+                            id="user-input"
+                            placeholder="강의 내용이나 개념에 대해 질문해보세요... (Shift+Enter: 줄바꿈)"
+                            rows="1"
+                            autocomplete="off"
+                            spellcheck="false"
+                        ></textarea>
+                        <div class="input-right">
+                            <span class="char-count" id="char-count"></span>
+                            <button id="send-btn" class="send-btn" disabled title="전송 (Enter)">
+                                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M22 2L11 13M22 2L15 22L11 13M11 13L2 9L22 2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    <p class="input-disclaimer">
+                        SocrAItes는 강의자료(RAG) 기반으로 답변하며, 정답을 직접 제공하지 않을 수 있습니다.
+                    </p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/frontend/app.js"></script>
+</body>
+</html>
