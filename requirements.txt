@@ -1,0 +1,11 @@
+langchain
+langgraph
+langchain-openai
+chromadb
+sentence-transformers
+pydantic
+python-dotenv
+streamlit
+fastapi
+uvicorn
+PyMuPDF

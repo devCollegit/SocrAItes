@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+ENV/
+
+# Project specific
+chroma_db/
+test_chroma/
+*.db
+.env
+data/pdfs/
+
+# OS
+.DS_Store
+Thumbs.db
+temp_uploads/
