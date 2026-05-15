@@ -13,6 +13,7 @@ test_chroma/
 *.db
 .env
 data/pdfs/
+logs/
 
 # OS
 .DS_Store
