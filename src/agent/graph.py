@@ -151,7 +151,8 @@ Available Lecture Context:
 ---
 
 Rules:
-1. Do NOT answer the question directly.
+1. Do NOT answer the question directly. 
+   - EXCEPTION: If the user explicitly asks for a 'summary', you MUST provide a very brief, high-level overview (like a list of main topics or a 2-sentence summary) to establish context, but then immediately follow up with a Socratic question to explore a specific detail.
 2. Use the provided context to form your questions.
 3. Be encouraging but firm in pushing the student to think.
 4. Detect frustration: if the student is struggling significantly, provide a small hint (Scaffolding).
@@ -184,7 +185,7 @@ def evaluator(state: AgentState) -> AgentState:
 Response: "{draft}"
 
 Criteria:
-1. Is it Socratic? (Does it avoid direct answers and ask a question?)
+1. Is it Socratic? (Does it avoid direct answers OR only provide high-level context/summary before asking a probing question?)
 2. Is it grounded in provided documents?
 3. Is it encouraging?
 
