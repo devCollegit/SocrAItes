@@ -31,6 +31,7 @@ SocrAItes(소크라테스)는 단순한 정답 제공을 넘어, 소크라테스
 상세 기획 및 설계 문서는 `docs/` 디렉토리를 참고하세요.
 - [소프트웨어 요구사항 명세서 (SRS)](docs/SRS.md)
 - [시스템 아키텍처 및 설계 문서](docs/System_Design.md)
+- [프로젝트 디렉토리 구조 및 상세 설명](docs/Project_Structure.md)
 
 ## 🏃 시작하기 (Getting Started)
 
