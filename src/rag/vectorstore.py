@@ -44,7 +44,7 @@ def get_collection(name: str = "socratic_docs"):
     return client.get_or_create_collection(name=name, embedding_function=embeddings)
 
 
-def add_documents(docs: List[str], metadatas: List[dict] | None = None, ids: List[str] | None = None) -> int:
+def add_documents(docs: List[str], metadatas: List[dict] | None = None, ids: List[str] | None = None) -> None:
     """Add a list of document *chunks* to the vector store.
 
     Each chunk becomes a separate record. ``metadatas`` can contain source

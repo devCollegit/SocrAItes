@@ -159,13 +159,8 @@ document.addEventListener('DOMContentLoaded', () => {
         
         if (role === 'system') {
             contentDiv.innerHTML = `<span class="system-text">${marked.parse(text)}</span>`;
-        } else if (role === 'ai') {
-            contentDiv.innerHTML = marked.parse(text);
         } else {
-            text.split('\n').forEach((line, i) => {
-                if (i > 0) contentDiv.appendChild(document.createElement('br'));
-                contentDiv.appendChild(document.createTextNode(line));
-            });
+            contentDiv.innerHTML = role === 'ai' ? marked.parse(text) : text.replace(/\n/g, '<br>');
         }
         
         msgDiv.appendChild(avatarDiv);
@@ -221,7 +216,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!file) return;
             
             // Show system message for upload starting
-            addMessage(`📄 **${file.name}** 파일을 업로드 중입니다...`, 'system');
+            addMessage(`📄 **${file.filename || file.name}** 파일을 업로드 중입니다...`, 'system');
             
             const formData = new FormData();
             formData.append('file', file);
