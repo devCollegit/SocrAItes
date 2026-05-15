@@ -67,6 +67,7 @@ body {
 .sidebar {
     width: 300px; background: var(--bg-sidebar); border-right: 1px solid var(--border);
     display: flex; flex-direction: column; padding: 1.25rem; transition: var(--transition);
+    overflow-y: auto;
 }
 .sidebar.collapsed { width: 0; padding: 0; border: none; overflow: hidden; }
 
@@ -110,6 +111,27 @@ body {
 }
 .new-chat-btn svg { width: 14px !important; height: 14px !important; }
 .new-chat-btn:hover { background: var(--primary-light); transform: translateY(-1px); }
+
+/* Learning Plan */
+.plan-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 12px;
+}
+.plan-content {
+    font-size: 0.75rem;
+    line-height: 1.4;
+    color: var(--text-main);
+}
+.plan-content h1, .plan-content h2, .plan-content h3 {
+    font-size: 0.8rem;
+    margin: 0.5rem 0 0.25rem;
+    color: var(--primary);
+}
+.plan-content p { margin-bottom: 0.5rem; }
+.plan-content ul, .plan-content ol { padding-left: 1.2rem; margin-bottom: 0.5rem; }
+.plan-empty p { font-size: 0.75rem; line-height: 1.4; color: var(--text-muted); text-align: center; }
 
 /* Main Chat */
 .chat-area { flex: 1; display: flex; flex-direction: column; background: transparent; }
