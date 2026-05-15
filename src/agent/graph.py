@@ -16,6 +16,30 @@ from .state import AgentState, DEFAULT_STATE
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("SocrAItes.Agent")
 
+# Configure specialized trace logging for graph steps and LLM interactions
+LOG_DIR = "logs"
+os.makedirs(LOG_DIR, exist_ok=True)
+trace_file = os.path.join(LOG_DIR, "agent_trace.log")
+
+trace_logger = logging.getLogger("SocrAItes.Trace")
+trace_logger.setLevel(logging.INFO)
+# Avoid double logging if this module is reloaded
+if not trace_logger.handlers:
+    fh = logging.FileHandler(trace_file, encoding='utf-8')
+    fh.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+    trace_logger.addHandler(fh)
+
+def _log_trace(step: str, request: Any = None, response: Any = None, decision: Any = None):
+    """Helper to log detailed trace to the specialized log file."""
+    trace_logger.info(f"STEP: {step}")
+    if request:
+        trace_logger.info(f"  [LLM Request]: {request}")
+    if response:
+        trace_logger.info(f"  [LLM Response]: {response}")
+    if decision:
+        trace_logger.info(f"  [Decision/Result]: {decision}")
+    trace_logger.info("-" * 40)
+
 
 def _get_content(response) -> str:
     """Safely extract text content from LLM response.
@@ -48,7 +72,6 @@ def coordinator(state: AgentState) -> AgentState:
     """
     last_user_message = state["messages"][-1]["content"] if state["messages"] else ""
     logger.info(f"--- [Coordinator] Entry Point ---")
-    logger.info(f"User Query: {last_user_message}")
     
     prompt = f"""You are the Coordinator for SocrAItes, a Socratic learning coach.
 Analyze the user's message: "{last_user_message}"
@@ -68,6 +91,7 @@ Respond with ONLY one word: 'PLAN' for category 1, or 'DIRECT' for category 2.""
         state["next_step"] = "direct_response"
         
     logger.info(f"Coordinator Decision: {state['next_step']}")
+    _log_trace("Coordinator", request=prompt, response=decision, decision=state["next_step"])
     return state
 
 
@@ -96,6 +120,7 @@ Respond with a brief plan description."""
     state["next_step"] = "subagents"
     
     logger.info(f"Execution Plan: {state['plan']}")
+    _log_trace("Planner", request=prompt, response=state["plan"])
     return state
 
 
@@ -143,6 +168,7 @@ Rules:
     state["draft_answer"] = _get_content(response)
     
     logger.info(f"Draft Answer Generated (length: {len(state['draft_answer'])})")
+    _log_trace("Supervisor", request=system_prompt, response=state["draft_answer"])
     return state
 
 
@@ -169,6 +195,7 @@ Respond with JSON: {{"pass": true/false, "feedback": "reasoning"}}"""
     state["evaluation"] = {"pass": True, "feedback": "Good Socratic engagement."}
     
     logger.info(f"Evaluation Result: {state['evaluation']['pass']}")
+    _log_trace("Evaluator", request=prompt, response=state["evaluation"])
     return state
 
 # ---------------------------------------------------------------------------
@@ -182,10 +209,12 @@ def direct_response(state: AgentState) -> AgentState:
     """Node for non-study queries."""
     logger.info(f"--- [Direct Response] Step ---")
     last_msg = state["messages"][-1]["content"]
-    response = llm.invoke([SystemMessage(content="You are a friendly academic assistant. Respond to the user's greeting or casual talk briefly in Korean."), HumanMessage(content=last_msg)])
+    system_msg = "You are a friendly academic assistant. Respond to the user's greeting or casual talk briefly in Korean."
+    response = llm.invoke([SystemMessage(content=system_msg), HumanMessage(content=last_msg)])
     state["draft_answer"] = _get_content(response)
     
     logger.info(f"Direct Response Generated.")
+    _log_trace("DirectResponse", request=f"{system_msg} | User: {last_msg}", response=state["draft_answer"])
     return state
 
 from src.rag import vectorstore
@@ -199,6 +228,7 @@ def retrieval_node(state: AgentState) -> AgentState:
     state["retrieved_docs"] = results
     
     logger.info(f"Retrieved {len(results)} document chunks.")
+    _log_trace("Retrieval", request=last_query, decision=f"Retrieved {len(results)} chunks")
     return state
 
 def build_graph() -> StateGraph:
