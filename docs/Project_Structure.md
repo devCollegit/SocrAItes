@@ -22,6 +22,7 @@ src/
 시스템의 두뇌 역할을 하며, 사용자의 질문에 따라 어떤 작업을 수행할지 결정하고 워크플로우를 관리합니다.
 - **`graph.py`**: LangGraph를 사용하여 에이전트의 노드(Coordinator, Planner, SocraticAgent 등)와 엣지(흐름 제어)를 정의합니다. 복잡한 소크라테스식 대화 로직을 그래프 형태로 구현합니다.
 - **`state.py`**: 에이전트 간에 공유되는 상태(`AgentState`) 객체를 정의합니다. 대화 이력, RAG 검색 결과, 현재 소크라테스식 질문 깊이(Depth), 사용자의 좌절도(Frustration level) 등이 포함됩니다.
+- 상세한 동작 흐름은 [에이전트 워크플로우 문서](Agent_Workflow.md)를 참고하세요.
 
 ### 2. `src/db/` - Database Layer
 사용자의 학습 데이터를 영구적으로 저장하고 관리합니다.

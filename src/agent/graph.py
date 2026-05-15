@@ -1,4 +1,5 @@
 import os
+import logging
 from datetime import datetime
 from typing import List, Dict, Any, Literal
 
@@ -10,6 +11,10 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langgraph.graph import StateGraph, END
 
 from .state import AgentState, DEFAULT_STATE
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("SocrAItes.Agent")
 
 
 def _get_content(response) -> str:
@@ -42,6 +47,8 @@ def coordinator(state: AgentState) -> AgentState:
     Routes to 'planner' for study queries or 'direct_response' for simple interactions.
     """
     last_user_message = state["messages"][-1]["content"] if state["messages"] else ""
+    logger.info(f"--- [Coordinator] Entry Point ---")
+    logger.info(f"User Query: {last_user_message}")
     
     prompt = f"""You are the Coordinator for SocrAItes, a Socratic learning coach.
 Analyze the user's message: "{last_user_message}"
@@ -60,6 +67,7 @@ Respond with ONLY one word: 'PLAN' for category 1, or 'DIRECT' for category 2.""
     else:
         state["next_step"] = "direct_response"
         
+    logger.info(f"Coordinator Decision: {state['next_step']}")
     return state
 
 
@@ -67,6 +75,7 @@ def planner(state: AgentState) -> AgentState:
     """Planner: Creates an execution plan and sets Socratic depth.
     Decides which sub-agents (retrieval, socratic, diagnosis) to prioritize.
     """
+    logger.info(f"--- [Planner] Step ---")
     last_query = state["messages"][-1]["content"]
     depth_modes = ["Light (1-2 turns)", "Standard (3-4 turns)", "Deep (5+ turns)"]
     current_depth = depth_modes[state.get("socratic_depth", 1)]
@@ -85,6 +94,8 @@ Respond with a brief plan description."""
     response = llm.invoke([HumanMessage(content=prompt)])
     state["plan"] = _get_content(response)
     state["next_step"] = "subagents"
+    
+    logger.info(f"Execution Plan: {state['plan']}")
     return state
 
 
@@ -92,6 +103,7 @@ def supervisor(state: AgentState) -> AgentState:
     """Supervisor: The Socratic Persona.
     Synthesizes retrieved documents and conversation history into a Socratic response.
     """
+    logger.info(f"--- [Supervisor] Generation Step ---")
     history = state["messages"]
     docs = state.get("retrieved_docs", [])
     plan = state.get("plan", "")
@@ -129,6 +141,8 @@ Rules:
             
     response = llm.invoke(messages)
     state["draft_answer"] = _get_content(response)
+    
+    logger.info(f"Draft Answer Generated (length: {len(state['draft_answer'])})")
     return state
 
 
@@ -136,6 +150,7 @@ def evaluator(state: AgentState) -> AgentState:
     """Evaluator: Quality check.
     Ensures the response is Socratic and grounded in the lecture materials.
     """
+    logger.info(f"--- [Evaluator] Quality Check Step ---")
     draft = state.get("draft_answer", "")
     docs = state.get("retrieved_docs", [])
     
@@ -152,6 +167,8 @@ Respond with JSON: {{"pass": true/false, "feedback": "reasoning"}}"""
     # For now, we'll assume a pass for the workflow. 
     # In a real implementation, we would parse JSON and potentially route back to Supervisor.
     state["evaluation"] = {"pass": True, "feedback": "Good Socratic engagement."}
+    
+    logger.info(f"Evaluation Result: {state['evaluation']['pass']}")
     return state
 
 # ---------------------------------------------------------------------------
@@ -163,19 +180,25 @@ def route_coordinator(state: AgentState) -> Literal["planner", "direct_response"
 
 def direct_response(state: AgentState) -> AgentState:
     """Node for non-study queries."""
+    logger.info(f"--- [Direct Response] Step ---")
     last_msg = state["messages"][-1]["content"]
     response = llm.invoke([SystemMessage(content="You are a friendly academic assistant. Respond to the user's greeting or casual talk briefly in Korean."), HumanMessage(content=last_msg)])
     state["draft_answer"] = _get_content(response)
+    
+    logger.info(f"Direct Response Generated.")
     return state
 
 from src.rag import vectorstore
 
 def retrieval_node(state: AgentState) -> AgentState:
     """Retrieval Node: Queries the vector store based on the last user message."""
+    logger.info(f"--- [Retrieval] Step ---")
     last_query = state["messages"][-1]["content"]
     # Retrieve top 5 relevant chunks
     results = vectorstore.query(last_query, k=5)
     state["retrieved_docs"] = results
+    
+    logger.info(f"Retrieved {len(results)} document chunks.")
     return state
 
 def build_graph() -> StateGraph:
