@@ -1,8 +1,9 @@
 langchain
+langchain-text-splitters
 langgraph
 langchain-openai
-chromadb
-sentence-transformers
+elasticsearch[async]>=8.13.0,<9.0.0
+FlagEmbedding
 pydantic
 python-dotenv
 streamlit

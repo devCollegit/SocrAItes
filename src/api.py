@@ -26,7 +26,7 @@ logger = logging.getLogger("socraites.api")
 
 from .agent.graph import GRAPH
 from .agent.state import DEFAULT_STATE
-from .rag.document_processor import process_pdf
+from .rag.document_processor import process_pdf, compute_file_hash
 from .rag.vectorstore import add_documents
 
 app = FastAPI(title="SocrAItes API")
@@ -120,16 +120,25 @@ async def upload_pdf(file: UploadFile = File(...)):
         
         # Process PDF into chunks
         processed_chunks = process_pdf(file_path)
-        
+
         # Prepare for vector store
+        file_hash = compute_file_hash(file_path)
         texts = [chunk["text"] for chunk in processed_chunks]
         metadatas = [chunk["metadata"] for chunk in processed_chunks]
+        ids = [f"{file_hash[:16]}_{chunk['metadata']['chunk_index']}" for chunk in processed_chunks]
+
+        # Add to vector store (중복 파일은 자동으로 스킵)
+        num_added = add_documents(texts, metadatas=metadatas, ids=ids)
         
-        # Add to vector store
-        num_added = add_documents(texts, metadatas=metadatas)
-        
+        if num_added == 0:
+            logger.info(f"[/upload] Duplicate file skipped: {file.filename}")
+            return {
+                "filename": file.filename,
+                "status": "duplicate",
+                "chunks_added": 0
+            }
+
         logger.info(f"[/upload] Successfully added {num_added} chunks from {file.filename}")
-        
         return {
             "filename": file.filename,
             "status": "success",

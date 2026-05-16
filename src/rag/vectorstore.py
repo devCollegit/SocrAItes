@@ -1,85 +1,131 @@
 # src/rag/vectorstore.py
-"""Vector store wrapper for SocrAItes.
-
-Uses ChromaDB (local) to store document chunks and perform similarity
-retrieval. This is a minimal implementation suitable for the MVP. In a
-production setting you would configure persistence directory, embedding
-model, and optionally a reranker.
-"""
-
 from __future__ import annotations
 
+import logging
 import os
 from typing import List, Tuple
 
-from chromadb import PersistentClient
-from chromadb.utils import embedding_functions
+from elasticsearch import Elasticsearch
+from elasticsearch.helpers import bulk
 
-# Environment variable name for the persistence folder (can be overridden)
-PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", "./chroma_db")
+from src.rag.embeddings import embed_documents, embed_query
 
-if os.getenv("OPENAI_API_KEY"):
-    embeddings = embedding_functions.OpenAIEmbeddingFunction(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        model_name="text-embedding-3-small",
-    )
-else:
-    # Use default embedding function if API key is missing
-    embeddings = embedding_functions.DefaultEmbeddingFunction()
+logger = logging.getLogger(__name__)
+
+ES_URL = os.getenv("ES_URL", "http://localhost:9200")
+INDEX_NAME = "socratic_docs"
+VECTOR_DIMS = 1024  # bge-m3 dense vector dimension
+
+_client: Elasticsearch | None = None
+
+INDEX_MAPPING = {
+    "settings": {
+        "analysis": {
+            "analyzer": {
+                "korean": {
+                    "type": "custom",
+                    "tokenizer": "nori_tokenizer",
+                }
+            }
+        }
+    },
+    "mappings": {
+        "properties": {
+            "text": {"type": "text", "analyzer": "korean"},
+            "dense_vector": {
+                "type": "dense_vector",
+                "dims": VECTOR_DIMS,
+                "index": True,
+                "similarity": "cosine",
+            },
+            "source": {"type": "keyword"},
+            "page": {"type": "integer"},
+            "chunk_index": {"type": "integer"},
+        }
+    },
+}
 
 
-def get_client() -> PersistentClient:
-    """Return a Chroma PersistentClient, creating the directory if needed."""
-    os.makedirs(PERSIST_DIR, exist_ok=True)
-    return PersistentClient(path=PERSIST_DIR)
+def get_client() -> Elasticsearch:
+    global _client
+    if _client is None:
+        _client = Elasticsearch(ES_URL)
+    return _client
 
 
-def get_collection(name: str = "socratic_docs"):
-    """Retrieve (or create) a collection for storing document chunks.
-
-    The collection uses the ``embeddings`` function defined above.
-    Uses get_or_create_collection for compatibility with ChromaDB v0.5+.
-    """
+def ensure_index() -> None:
     client = get_client()
-    return client.get_or_create_collection(name=name, embedding_function=embeddings)
+    if not client.indices.exists(index=INDEX_NAME):
+        client.indices.create(index=INDEX_NAME, body=INDEX_MAPPING)
+        logger.info(f"Created ES index: {INDEX_NAME}")
 
 
-def add_documents(docs: List[str], metadatas: List[dict] | None = None, ids: List[str] | None = None) -> None:
-    """Add a list of document *chunks* to the vector store.
+def add_documents(docs: List[str], metadatas: List[dict] | None = None, ids: List[str] | None = None) -> int:
+    ensure_index()
+    client = get_client()
 
-    Each chunk becomes a separate record. ``metadatas`` can contain source
-    information like ``{"source": "Week5.pdf", "page": 12}``.
-    ``ids`` can be provided explicitly to avoid duplicates; if omitted,
-    auto-generated IDs are used.
-    """
-    collection = get_collection()
-    existing_ids = set(collection.get()["ids"])
-    
     if ids is None:
         import uuid
         ids = [str(uuid.uuid4()) for _ in docs]
-    
-    # Filter out already-existing IDs to prevent duplicate insertion
-    new_docs, new_metas, new_ids = [], [], []
-    for doc, meta, id_ in zip(docs, metadatas or [{}] * len(docs), ids):
-        if id_ not in existing_ids:
-            new_docs.append(doc)
-            new_metas.append(meta)
-            new_ids.append(id_)
-    
-    if new_docs:
-        collection.add(ids=new_ids, documents=new_docs, metadatas=new_metas)
-    
-    return len(new_docs)
+
+    if metadatas is None:
+        metadatas = [{}] * len(docs)
+
+    vectors = embed_documents(docs)
+
+    actions = [
+        {
+            "_op_type": "create",  # 이미 존재하면 스킵
+            "_index": INDEX_NAME,
+            "_id": id_,
+            "_source": {
+                "text": doc,
+                "dense_vector": vector,
+                **meta,
+            },
+        }
+        for doc, meta, id_, vector in zip(docs, metadatas, ids, vectors)
+    ]
+
+    success, _ = bulk(client, actions, raise_on_error=False)
+    return success
+
+
+def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
+    """여러 검색 결과 리스트를 RRF로 합산합니다. score = Σ 1/(k + rank)"""
+    scores: dict[str, float] = {}
+    for ranking in rankings:
+        for rank, doc_id in enumerate(ranking, start=1):
+            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank)
+    return scores
 
 
 def query(query_text: str, k: int = 5) -> List[Tuple[str, float]]:
-    """Return the top‑k most similar document chunks for *query_text*.
+    ensure_index()
+    client = get_client()
 
-    Returns a list of ``(document, distance)`` tuples.
-    """
-    collection = get_collection()
-    results = collection.query(query_texts=[query_text], n_results=k)
-    docs = results.get("documents", [[]])[0]
-    dists = results.get("distances", [[]])[0]
-    return list(zip(docs, dists))
+    query_vector = embed_query(query_text)
+    window = k * 4
+
+    # BM25 검색
+    bm25_resp = client.search(
+        index=INDEX_NAME,
+        body={"query": {"match": {"text": {"query": query_text}}}, "size": window},
+    )
+    bm25_hits = {h["_id"]: h["_source"]["text"] for h in bm25_resp["hits"]["hits"]}
+    bm25_ranking = list(bm25_hits.keys())
+
+    # Dense KNN 검색
+    knn_resp = client.search(
+        index=INDEX_NAME,
+        body={"knn": {"field": "dense_vector", "query_vector": query_vector, "k": window, "num_candidates": window * 2}, "size": window},
+    )
+    knn_hits = {h["_id"]: h["_source"]["text"] for h in knn_resp["hits"]["hits"]}
+    knn_ranking = list(knn_hits.keys())
+
+    # RRF 합산
+    all_docs = {**bm25_hits, **knn_hits}
+    rrf_scores = _rrf([bm25_ranking, knn_ranking])
+    top_k = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+
+    return [(all_docs[doc_id], score) for doc_id, score in top_k if doc_id in all_docs]

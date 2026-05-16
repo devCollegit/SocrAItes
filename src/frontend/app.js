@@ -233,7 +233,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 
                 const data = await response.json();
-                addMessage(`✅ **${data.filename}** 등록 완료! (${data.chunks_added}개의 지식 조각 추출)`, 'system');
+                if (data.status === 'duplicate') {
+                    addMessage(`⚠️ **${data.filename}** 은 이미 등록된 파일입니다.`, 'system');
+                } else {
+                    addMessage(`✅ **${data.filename}** 등록 완료! (${data.chunks_added}개의 지식 조각 추출)`, 'system');
+                }
                 
                 // Update doc count (dummy update since we don't know total docs in store)
                 // In a real app, you might fetch the current count or list
