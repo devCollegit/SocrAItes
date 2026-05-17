@@ -12,17 +12,18 @@ SocrAItes는 교수님이 제공한 강의 PDF를 기반으로, 학생에게 정
 - **대학원생 (Primary User):** 강의 내용을 깊이 이해하고 싶으나, 질문할 곳이 마땅치 않은 학생. 즉각적인 답보다는 구조적 이해를 원함.
 
 ### 2.2 운영 환경
-- Web Application (Streamlit 기반)
+- Web Application (FastAPI + Vanilla HTML/CSS/JS)
 - PC 및 모바일 웹 브라우저 지원
+- Docker Compose 기반 Elasticsearch/Kibana 실행 환경
 
 ## 3. 기능적 요구사항 (Functional Requirements)
 ### 3.1 [F1] 강의자료 RAG (Retrieval-Augmented Generation)
 - **요구사항:** 사용자는 PDF 형태의 강의자료를 업로드할 수 있어야 한다.
-- **세부기능:** PDF 텍스트 추출, 청킹(Chunking), 임베딩, Vector DB(ChromaDB) 저장 및 검색.
+- **세부기능:** PDF 텍스트 추출, 청킹(Chunking), 임베딩, Elasticsearch 저장 및 검색.
 
 ### 3.2 [F2] 소크라테스식 대화 엔진
 - **요구사항:** 시스템은 사용자의 질문에 직접적인 정답을 제공하지 않고, 반문/예시 요구/전제 검토 형식으로 응답해야 한다.
-- **세부기능:** CoT(Chain of Thought) 및 페르소나 프롬프트를 적용한 LLM 응답 생성.
+- **세부기능:** 페르소나 프롬프트를 적용한 LLM 응답 생성, 소크라테스식 깊이 조절.
 
 ### 3.3 [F3] Function Calling 기반 학습 도구
 - **요구사항:** 대화 맥락에 따라 외부 도구를 호출하여 추가 기능을 제공한다.
@@ -52,10 +53,12 @@ SocrAItes는 교수님이 제공한 강의 PDF를 기반으로, 학생에게 정
 ### 4.3 확장성 및 유지보수 (Scalability & Maintainability)
 - LangGraph를 활용한 Agent 계층 구조 분리 (Coordinator, Planner, Supervisor, Evaluator)
 - 모듈화된 파이프라인 구성
+- 문서 정본/레거시 분리(`docs/`, `docs/legacy/`)를 통한 협업 안정성 확보
 
 ## 5. MVP 범위 (Minimum Viable Product)
-- [x] 1개 강의 PDF 업로드 및 RAG 질의응답
-- [x] 소크라테스 페르소나 기반 5턴 이상 대화 유지
-- [x] Socratic Depth 3단계 모드 + 좌절 신호 감지
+- [x] 1개 이상 강의 PDF 업로드 및 RAG 질의응답
+- [x] 소크라테스 페르소나 기반 다중 턴 대화 유지
+- [x] Socratic Depth 기반 응답 제어
 - [x] Function Calling 4종 (퀴즈, 일정, 약점, 답변전환)
-- [x] Streamlit Web UI
+- [x] FastAPI + 웹 UI 기반 서비스 제공
+- [x] Elasticsearch 하이브리드 검색(BM25 + Dense KNN + RRF)
