@@ -66,20 +66,78 @@ else:
 # Core Agent Nodes
 # ---------------------------------------------------------------------------
 
+REWRITER_PROMPT = """You are an expert Query Reformulator for a Socratic learning assistant.
+Your task is to analyze the conversation history and the latest user message, and reformulate it into a standalone, search-optimized query in Korean.
+
+Instructions:
+1. Identify the core academic concept or question the user is asking about.
+2. Incorporate necessary context (concepts, terms, definitions) from the previous turns of the conversation so that the query is fully self-contained.
+3. Keep the query concise, focused on key concepts, and ideal for retrieval from lecture materials (PDF).
+4. If the latest message is a simple greeting, thank you, casual chit-chat, or does not require any context (it is already self-contained), return it exactly as-is.
+5. Do NOT add any introductory text, explanations, or quotes. Output ONLY the reformulated query.
+
+Conversation History:
+{history_text}
+
+Latest User Message:
+{last_message}
+
+Standalone Query (Korean):"""
+
+def _format_history(messages: List[Dict[str, Any]]) -> str:
+    formatted = []
+    for msg in messages[:-1]: # Exclude the last message
+        role = "Student" if msg["role"] == "user" else "Tutor"
+        formatted.append(f"{role}: {msg['content']}")
+    return "\n".join(formatted)
+
+def query_contextualizer(state: AgentState) -> AgentState:
+    """Query Contextualizer: Reformulates the user's query in light of conversation history."""
+    logger.info(f"--- [Query Contextualizer] Step ---")
+    messages = state.get("messages", [])
+    
+    if len(messages) <= 1:
+        # Optimization: Bypassing LLM call on first turn
+        state["contextualized_query"] = messages[-1]["content"] if messages else ""
+        logger.info(f"First-turn query. Bypassing LLM query rewriting. Query: '{state['contextualized_query']}'")
+        _log_trace("QueryContextualizer", decision=f"Bypassed LLM: {state['contextualized_query']}")
+        return state
+        
+    history_text = _format_history(messages)
+    last_message = messages[-1]["content"]
+    
+    prompt = REWRITER_PROMPT.format(history_text=history_text, last_message=last_message)
+    response = llm.invoke([HumanMessage(content=prompt)])
+    rewritten = _get_content(response).strip()
+    
+    # Strip quotes if any returned by LLM
+    if rewritten.startswith('"') and rewritten.endswith('"'):
+        rewritten = rewritten[1:-1].strip()
+    elif rewritten.startswith("'") and rewritten.endswith("'"):
+        rewritten = rewritten[1:-1].strip()
+        
+    state["contextualized_query"] = rewritten
+    logger.info(f"Original query: '{last_message}' -> Contextualized query: '{rewritten}'")
+    _log_trace("QueryContextualizer", request=prompt, response=rewritten, decision=f"Rewritten: {rewritten}")
+    return state
+
+
 def coordinator(state: AgentState) -> AgentState:
     """Coordinator: Analyzes the user query to decide the next step.
     Routes to 'planner' for study queries or 'direct_response' for simple interactions.
     """
-    last_user_message = state["messages"][-1]["content"] if state["messages"] else ""
+    last_user_message = state.get("contextualized_query", "")
+    if not last_user_message:
+        last_user_message = state["messages"][-1]["content"] if state["messages"] else ""
     logger.info(f"--- [Coordinator] Entry Point ---")
     
     prompt = f"""You are the Coordinator for SocrAItes, a Socratic learning coach.
 Analyze the user's message: "{last_user_message}"
-
+ 
 Decide if this is:
 1. A learning/study query related to lecture materials or academic concepts.
 2. A casual interaction (greeting, thanks, off-topic, etc.) or a simple navigation request.
-
+ 
 Respond with ONLY one word: 'PLAN' for category 1, or 'DIRECT' for category 2."""
     
     response = llm.invoke([HumanMessage(content=prompt)])
@@ -100,7 +158,9 @@ def planner(state: AgentState) -> AgentState:
     Decides which sub-agents (retrieval, socratic, diagnosis) to prioritize.
     """
     logger.info(f"--- [Planner] Step ---")
-    last_query = state["messages"][-1]["content"]
+    last_query = state.get("contextualized_query", "")
+    if not last_query:
+        last_query = state["messages"][-1]["content"] if state["messages"] else ""
     depth_modes = ["Light (1-2 turns)", "Standard (3-4 turns)", "Deep (5+ turns)"]
     current_depth = depth_modes[state.get("socratic_depth", 1)]
     
@@ -223,7 +283,9 @@ from src.rag import vectorstore
 def retrieval_node(state: AgentState) -> AgentState:
     """Retrieval Node: Queries the vector store based on the last user message."""
     logger.info(f"--- [Retrieval] Step ---")
-    last_query = state["messages"][-1]["content"]
+    last_query = state.get("contextualized_query", "")
+    if not last_query:
+        last_query = state["messages"][-1]["content"] if state["messages"] else ""
     # Retrieve top 5 relevant chunks
     results = vectorstore.query(last_query, k=5)
     state["retrieved_docs"] = results
@@ -235,6 +297,7 @@ def retrieval_node(state: AgentState) -> AgentState:
 def build_graph() -> StateGraph:
     graph = StateGraph(AgentState)
 
+    graph.add_node("query_contextualizer", query_contextualizer)
     graph.add_node("coordinator", coordinator)
     graph.add_node("planner", planner)
     graph.add_node("direct_response", direct_response)
@@ -242,7 +305,9 @@ def build_graph() -> StateGraph:
     graph.add_node("supervisor", supervisor)
     graph.add_node("evaluator", evaluator)
 
-    graph.set_entry_point("coordinator")
+    graph.set_entry_point("query_contextualizer")
+    
+    graph.add_edge("query_contextualizer", "coordinator")
     
     graph.add_conditional_edges(
         "coordinator",
