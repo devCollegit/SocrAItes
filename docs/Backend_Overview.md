@@ -1,80 +1,93 @@
 # Backend Overview Documentation
 
-This document explains the purpose and design of the core backend components we have created for **SocrAItes**.  Each section references the actual source files in the repository so you can quickly locate the implementation.
+이 문서는 현재 SocrAItes 백엔드 구성 요소의 역할과 연결 방식을 설명합니다.
 
----
+## 1. API Layer (`src/api.py`)
 
-## 1. Agent Layer (`src/agent/`)
+### 1.1 핵심 엔드포인트
 
-| File | Role | Key Concepts |
-|------|------|--------------|
-| `state.py` | Defines the **state schema** (`AgentState`) that flows through the LangGraph workflow. It holds the conversation history, current Socratic depth, frustration level, and retrieved document chunks. | TypedDict ensures static typing while remaining JSON‑serializable. Provides `DEFAULT_STATE` for easy initialization. |
-| `graph.py` | Constructs the **LangGraph StateGraph** that orchestrates the agent pipeline: **Coordinator → Planner → RetrievalAgent → SocraticAgent → DiagnosisAgent → Supervisor → Evaluator**. | Node functions are currently stubs that forward the state; they will later be wired to actual LLM calls, RAG queries, and analysis logic. The graph uses conditional edges to model the flow and finishes at the `evaluator` node. |
+1. `POST /chat`
+	- 요청 메시지를 `AgentState`로 변환
+	- `GRAPH.compile().invoke(state)` 실행
+	- `answer`, `retrieved_docs`, `plan` 반환
+2. `POST /upload`
+	- PDF 파일 임시 저장
+	- `process_pdf`로 텍스트 청킹
+	- `add_documents`로 Elasticsearch 적재
+3. `GET /health`
+	- 서비스 상태 반환
 
-**Purpose**: The agent layer is the brain of SocrAItes. It manages the turn‑by‑turn execution, decides which sub‑agents to run, and combines their outputs into a draft response.  By separating concerns into distinct nodes, we get clear debugging boundaries and can replace each stub with production logic incrementally.
+### 1.2 정적 프론트엔드 서빙
 
----
+`src/frontend/`를 `/frontend` 경로로 마운트하고, `/` 요청 시 `index.html`을 반환합니다.
 
-## 2. Database Layer (`src/db/`)
+## 2. Agent Layer (`src/agent/`)
 
-| File | Role | Key Functions |
-|------|------|---------------|
-| `database.py` | Provides a **lightweight SQLite** store for persisting conversation logs and weakness records. | `init_db()`, `log_message()`, `get_recent_messages()`, `save_weakness()`, `get_all_weaknesses()` |
+### 2.1 `state.py`
 
-**Purpose**: Persistent storage is required for two reasons:
-1. **Conversation history** – needed by the Diagnosis Agent to analyse weakness patterns and generate weekly reports.
-2. **Weakness tracking** – each time the `save_weakness` tool is called we store a record that can later be visualised or used for spaced‑repetition scheduling.
+LangGraph에서 공유되는 상태 스키마와 기본 상태를 제공합니다.
 
-The module is deliberately dependency‑free (uses only the built‑in `sqlite3`) to keep setup simple for the MVP.
+### 2.2 `graph.py`
 
----
+현재 그래프 노드:
 
-## 3. RAG (Retrieval‑Augmented Generation) Layer (`src/rag/`)
+1. `coordinator`
+2. `planner` 또는 `direct_response`
+3. `retrieval`
+4. `supervisor`
+5. `evaluator`
 
-| File | Role | Highlights |
-|------|------|------------|
-| `document_processor.py` | Minimal **PDF loader & chunker**.  In the MVP it reads a PDF as UTF‑8 text and splits it into overlapping character chunks (`CHUNK_SIZE = 1000`, `CHUNK_OVERLAP = 200`). | Functions: `load_pdf`, `chunk_text`, `process_pdf`. Replace with a proper PDF parsing library (e.g., PyMuPDF) for production. |
-| `vectorstore.py` | Wrapper around **ChromaDB** for embedding storage and similarity search. | Functions: `get_client`, `get_collection`, `add_documents`, `query`. Uses OpenAI `text-embedding-3-small` via `chromadb.utils.embedding_functions`. |
+노드별 LLM 요청/응답/결정은 `logs/agent_trace.log`에 저장합니다.
 
-**Purpose**: The RAG pipeline turns uploaded lecture PDFs into vector embeddings that can be retrieved during a conversation.  `document_processor` prepares raw text chunks, `vectorstore` indexes them and provides a `query` API for the Retrieval Agent.
+## 3. RAG Layer (`src/rag/`)
 
----
+### 3.1 `document_processor.py`
 
-## 4. Function‑Calling Tools (`src/tools/`)
+1. PyMuPDF(`fitz`)로 PDF 페이지 텍스트 추출
+2. `RecursiveCharacterTextSplitter`로 청킹
+3. `source`, `page`, `chunk_index` 메타데이터 생성
 
-| File | Role | Exposed Tools |
-|------|------|---------------|
-| `learning_tools.py` | Defines **Pydantic schemas** and **stub implementations** for the four function‑calling utilities required by the SocrAItes workflow. | `generate_quiz`, `schedule_review`, `save_weakness`, `escape_to_answer` (exposed via `TOOL_MAP`). |
+### 3.2 `embeddings.py`
 
-Each tool currently logs the request and returns a deterministic placeholder response.  When the full system is ready, these stubs will be replaced with real logic:
-- **Quiz generation** – LLM‑driven multiple‑choice questions.
-- **Review scheduling** – write to a calendar or DB.
-- **Weakness persistence** – call `src.db.database.save_weakness`.
-- **Escape to answer** – bypass Socratic flow for direct answers.
+1. `BAAI/bge-m3` 로컬 모델 로드
+2. 디바이스 자동 선택(`mps`, `cuda`, `cpu`)
+3. 문서/질의 임베딩 벡터 생성
 
-**Purpose**: Function calling enables the agent to trigger external actions (quiz creation, scheduling, logging weaknesses) without hard‑coding the behavior inside the LLM prompts.  The clear schema makes it easy for LangChain/LangGraph to validate and serialize calls.
+### 3.3 `vectorstore.py`
 
----
+Elasticsearch 기반 인덱싱/검색을 담당합니다.
 
-## 5. How the Pieces Fit Together
+1. 인덱스: `socratic_docs`
+2. 매핑: 한국어 analyzer + dense_vector(1024)
+3. 검색: BM25 + Dense KNN + RRF 결합
 
-1. **User uploads a PDF** → `document_processor.process_pdf` creates text chunks.
-2. Chunks are stored in **ChromaDB** via `vectorstore.add_documents`.
-3. During a chat turn, the **Coordinator** receives the user query and passes the state to the **Planner**.
-4. The Planner triggers the **Retrieval Agent**, which queries ChromaDB (`vectorstore.query`) and populates `state["retrieved_docs"]`.
-5. The **Socratic Agent** (future implementation) uses the retrieved docs and the current `socratic_depth` to craft a Socratic response.
-6. The **Diagnosis Agent** examines `state["messages"]` to detect frustration; if needed it calls one of the **Tools** (e.g., `escape_to_answer`).
-7. The **Supervisor** aggregates everything into a draft answer, which the **Evaluator** validates before sending back to the user.
-8. All messages and any identified weaknesses are persisted via the **DB layer**.
+## 4. Data Layer (`src/db/`)
 
----
+SQLite 모듈은 대화 로그/약점 기록을 위한 보조 저장 계층입니다.
+현재 기능 확장 시 tool 호출 결과와 리포팅 데이터를 저장하는 방향으로 사용합니다.
 
-## 6. Next Steps
-- Choose the LLM provider (OpenAI vs Anthropic) and set the appropriate API keys in `.env`.
-- Replace placeholder logic in the agent nodes with real calls to the LLM and RAG utilities.
-- Upgrade `document_processor` to use a proper PDF parser and improve chunking (semantic splitting, metadata extraction).
-- Connect the `learning_tools` stubs to real implementations (quiz generation, calendar integration, etc.).
+## 5. Tools Layer (`src/tools/`)
 
----
+`learning_tools.py`는 function-calling 도구 스키마와 구현을 제공합니다.
 
-*Document location*: `docs/Backend_Overview.md`
+1. `generate_quiz`
+2. `schedule_review`
+3. `save_weakness`
+4. `escape_to_answer`
+
+## 6. 실행 데이터 흐름
+
+1. 사용자 질문 입력 (`/chat`)
+2. coordinator/planner로 의도 분석 및 계획 생성
+3. retrieval이 Elasticsearch에서 문서 검색
+4. supervisor가 소크라테스식 응답 초안 생성
+5. evaluator를 거쳐 최종 답변 반환
+
+업로드 흐름은 별도로,
+
+1. PDF 업로드 (`/upload`)
+2. 텍스트 추출/청킹
+3. 임베딩 생성
+4. Elasticsearch 인덱싱
+
+으로 동작합니다.
