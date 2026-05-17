@@ -29,16 +29,60 @@ if not trace_logger.handlers:
     fh.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
     trace_logger.addHandler(fh)
 
-def _log_trace(step: str, request: Any = None, response: Any = None, decision: Any = None):
-    """Helper to log detailed trace to the specialized log file."""
-    trace_logger.info(f"STEP: {step}")
-    if request:
-        trace_logger.info(f"  [LLM Request]: {request}")
-    if response:
-        trace_logger.info(f"  [LLM Response]: {response}")
+def _log_trace(
+    step: str,
+    purpose: str = "",
+    inputs: dict = None,
+    prompt_details: Any = None,
+    response: Any = None,
+    decision: Any = None
+):
+    """Helper to log beautifully formatted detailed trace to the specialized log file."""
+    border = "=" * 80
+    trace_logger.info(border)
+    trace_logger.info(f"NODE: {step.upper()}")
+    trace_logger.info(border)
+    
+    if purpose:
+        trace_logger.info(f"[PURPOSE]\n  {purpose}\n")
+        
+    if inputs:
+        trace_logger.info("[INPUT CONTEXT]")
+        for k, v in inputs.items():
+            trace_logger.info(f"  * {k}: {v}")
+        trace_logger.info("")
+        
+    if prompt_details:
+        trace_logger.info("[LLM PROMPT / REQUEST CONTENT]")
+        if isinstance(prompt_details, str):
+            indented = "\n".join([f"    {line}" for line in prompt_details.split("\n")])
+            trace_logger.info(f"{indented}\n")
+        elif isinstance(prompt_details, dict):
+            for pk, pv in prompt_details.items():
+                trace_logger.info(f"  - {pk}:")
+                indented = "\n".join([f"      {line}" for line in str(pv).split("\n")])
+                trace_logger.info(f"{indented}")
+            trace_logger.info("")
+        else:
+            trace_logger.info(f"  {prompt_details}\n")
+            
+    if response is not None:
+        trace_logger.info("[LLM RESPONSE]")
+        trace_logger.info("-" * 80)
+        indented_resp = "\n".join([f"  {line}" for line in str(response).split("\n")])
+        trace_logger.info(indented_resp)
+        trace_logger.info("-" * 80)
+        trace_logger.info("")
+        
     if decision:
-        trace_logger.info(f"  [Decision/Result]: {decision}")
-    trace_logger.info("-" * 40)
+        trace_logger.info("[DECISION & STATE MUTATION]")
+        if isinstance(decision, dict):
+            for dk, dv in decision.items():
+                trace_logger.info(f"  * {dk}: {dv}")
+        else:
+            trace_logger.info(f"  * Result: {decision}")
+            
+    trace_logger.info(border + "\n\n")
 
 
 def _get_content(response) -> str:
@@ -100,7 +144,12 @@ def query_contextualizer(state: AgentState) -> AgentState:
         # Optimization: Bypassing LLM call on first turn
         state["contextualized_query"] = messages[-1]["content"] if messages else ""
         logger.info(f"First-turn query. Bypassing LLM query rewriting. Query: '{state['contextualized_query']}'")
-        _log_trace("QueryContextualizer", decision=f"Bypassed LLM: {state['contextualized_query']}")
+        _log_trace(
+            step="QueryContextualizer",
+            purpose="Determine search-optimized query. Bypassed LLM query rewriting because this is the first turn.",
+            inputs={"Original User Message": state["contextualized_query"]},
+            decision="Bypassed LLM. Using original query as contextualized query."
+        )
         return state
         
     history_text = _format_history(messages)
@@ -118,7 +167,20 @@ def query_contextualizer(state: AgentState) -> AgentState:
         
     state["contextualized_query"] = rewritten
     logger.info(f"Original query: '{last_message}' -> Contextualized query: '{rewritten}'")
-    _log_trace("QueryContextualizer", request=prompt, response=rewritten, decision=f"Rewritten: {rewritten}")
+    _log_trace(
+        step="QueryContextualizer",
+        purpose="Reformulate follow-up user query using conversation history into a standalone, search-optimized query.",
+        inputs={
+            "Original User Message": last_message,
+            "History Length (turns)": len(messages) - 1
+        },
+        prompt_details={
+            "Formatted History": history_text,
+            "Reformulation Prompt Template": REWRITER_PROMPT.replace("{history_text}", "...").replace("{last_message}", last_message)
+        },
+        response=rewritten,
+        decision=f"Rewritten Standalone Query: '{rewritten}'"
+    )
     return state
 
 
@@ -149,7 +211,14 @@ Respond with ONLY one word: 'PLAN' for category 1, or 'DIRECT' for category 2.""
         state["next_step"] = "direct_response"
         
     logger.info(f"Coordinator Decision: {state['next_step']}")
-    _log_trace("Coordinator", request=prompt, response=decision, decision=state["next_step"])
+    _log_trace(
+        step="Coordinator",
+        purpose="Analyze the contextualized query to classify it as a casual conversation (DIRECT) or study-related query (PLAN).",
+        inputs={"Contextualized Query": last_user_message},
+        prompt_details=prompt,
+        response=decision,
+        decision=f"Routing Key: {state['next_step']}"
+    )
     return state
 
 
@@ -180,7 +249,17 @@ Respond with a brief plan description."""
     state["next_step"] = "subagents"
     
     logger.info(f"Execution Plan: {state['plan']}")
-    _log_trace("Planner", request=prompt, response=state["plan"])
+    _log_trace(
+        step="Planner",
+        purpose="Create a Socratic inquiry plan and identify the study target.",
+        inputs={
+            "User Query": last_query,
+            "Socratic Depth Mode": current_depth
+        },
+        prompt_details=prompt,
+        response=state["plan"],
+        decision="Execution Plan generated and saved to state."
+    )
     return state
 
 
@@ -229,7 +308,21 @@ Rules:
     state["draft_answer"] = _get_content(response)
     
     logger.info(f"Draft Answer Generated (length: {len(state['draft_answer'])})")
-    _log_trace("Supervisor", request=system_prompt, response=state["draft_answer"])
+    _log_trace(
+        step="Supervisor",
+        purpose="Synthesize conversation history and retrieved lecture documents to generate a Socratic question or hint in Korean.",
+        inputs={
+            "Socratic Depth": depth,
+            "Retrieved Docs Count": len(docs),
+            "History Length (turns)": len(history)
+        },
+        prompt_details={
+            "System Prompt / Rules": system_prompt,
+            "Conversation History Stream": "\n".join([f"  {m['role'].upper()}: {m['content']}" for m in history])
+        },
+        response=state["draft_answer"],
+        decision="Socratic Draft Response generated and saved to state."
+    )
     return state
 
 
@@ -256,7 +349,17 @@ Respond with JSON: {{"pass": true/false, "feedback": "reasoning"}}"""
     state["evaluation"] = {"pass": True, "feedback": "Good Socratic engagement."}
     
     logger.info(f"Evaluation Result: {state['evaluation']['pass']}")
-    _log_trace("Evaluator", request=prompt, response=state["evaluation"])
+    _log_trace(
+        step="Evaluator",
+        purpose="Quality check: Ensure the drafted response is Socratic, encourages student thinking, and is grounded in context.",
+        inputs={
+            "Draft Answer Length": len(draft),
+            "Retrieved Docs Count": len(docs)
+        },
+        prompt_details=prompt,
+        response=state["evaluation"],
+        decision=f"Pass Status: {state['evaluation']['pass']}"
+    )
     return state
 
 # ---------------------------------------------------------------------------
@@ -275,7 +378,14 @@ def direct_response(state: AgentState) -> AgentState:
     state["draft_answer"] = _get_content(response)
     
     logger.info(f"Direct Response Generated.")
-    _log_trace("DirectResponse", request=f"{system_msg} | User: {last_msg}", response=state["draft_answer"])
+    _log_trace(
+        step="DirectResponse",
+        purpose="Respond politely and briefly in Korean to non-study casual messages or greetings.",
+        inputs={"User Input": last_msg},
+        prompt_details=f"System: {system_msg}\nHuman: {last_msg}",
+        response=state["draft_answer"],
+        decision="Casual Direct Response generated."
+    )
     return state
 
 from src.rag import vectorstore
@@ -291,7 +401,15 @@ def retrieval_node(state: AgentState) -> AgentState:
     state["retrieved_docs"] = results
     
     logger.info(f"Retrieved {len(results)} document chunks.")
-    _log_trace("Retrieval", request=last_query, decision=f"Retrieved {len(results)} chunks")
+    _log_trace(
+        step="Retrieval",
+        purpose="Query the Elasticsearch vector store using the contextualized query.",
+        inputs={"Search Query": last_query},
+        decision={
+            "Retrieved Count": len(results),
+            "Retrieved Chunks Snippets": [r[0][:80].replace("\n", " ") + "..." for r in results]
+        }
+    )
     return state
 
 def build_graph() -> StateGraph:
