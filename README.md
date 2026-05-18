@@ -30,10 +30,14 @@ SocrAItes(소크라테스)는 단순한 정답 제공을 넘어, 소크라테스
 
 ## 📂 문서
 상세 기획 및 설계 문서는 `docs/` 디렉토리를 참고하세요.
+
+- [문서 허브 (읽기 순서/운영 규칙)](docs/README.md)
 - [소프트웨어 요구사항 명세서 (SRS)](docs/SRS.md)
 - [시스템 아키텍처 및 설계 문서](docs/System_Design.md)
 - [프로젝트 디렉토리 구조 및 상세 설명](docs/Project_Structure.md)
 - [에이전트 워크플로우 및 로직 상세](docs/Agent_Workflow.md)
+- [백엔드 개요](docs/Backend_Overview.md)
+- [레거시 문서 인덱스](docs/legacy/README.md)
 
 ## 🏃 시작하기 (Getting Started)
 

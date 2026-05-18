@@ -1,78 +1,76 @@
 # Agent Workflow & Logic - SocrAItes
 
-이 문서는 SocrAItes 에이전트의 핵심 로직, 상태 관리 및 데이터 흐름(Flow)을 상세히 설명합니다. 에이전트는 [LangGraph](https://langchain-ai.github.io/langgraph/)를 기반으로 구축되었습니다.
+이 문서는 `src/agent/graph.py` 기준의 현재 LangGraph 워크플로우를 설명합니다.
 
-## 1. 에이전트 상태 관리 (`AgentState`)
-에이전트의 모든 노드는 `AgentState` 객체를 공유하며 데이터를 주고받습니다.
-- `messages`: 전체 대화 이력 (사용자 및 AI 메시지 리스트).
-- `socratic_depth`: 질문의 깊이 수준 (0: Light, 1: Standard, 2: Deep).
-- `frustration_level`: 사용자의 좌절도 수준.
-- `retrieved_docs`: RAG 파이프라인을 통해 검색된 관련 강의 자료 청크.
-- `next_step`: 다음으로 이동할 노드를 결정하는 라우팅 키.
-- `draft_answer`: 생성된 답변 초안.
+## 1. 상태(`AgentState`) 핵심 필드
 
----
+1. `messages`: 사용자/어시스턴트 대화 이력
+2. `socratic_depth`: 대화 깊이(0/1/2)
+3. `retrieved_docs`: 검색된 문서 청크 목록
+4. `next_step`: 라우팅 키
+5. `plan`: planner가 만든 실행 계획
+6. `draft_answer`: supervisor가 생성한 응답 초안
 
-## 2. 전체 워크플로우 (Graph Flow)
-
-에이전트는 사용자의 입력을 받으면 다음과 같은 그래프 구조를 따라 동작합니다.
+## 2. 그래프 구조
 
 ```mermaid
 graph TD
-    Entry([Entry]) --> Coordinator{Coordinator}
-    
-    Coordinator -->|DIRECT| DirectResponse[Direct Response]
-    Coordinator -->|PLAN| Planner[Planner]
-    
-    Planner --> Retrieval[Retrieval Node]
-    Retrieval --> Supervisor[Supervisor]
-    Supervisor --> Evaluator{Evaluator}
-    
-    Evaluator -->|Approved| End([End])
-    DirectResponse --> End
+    Entry([Entry]) --> Coordinator{coordinator}
+    Coordinator -->|PLAN| Planner[planner]
+    Coordinator -->|DIRECT| Direct[direct_response]
+    Planner --> Retrieval[retrieval]
+    Retrieval --> Supervisor[supervisor]
+    Supervisor --> Evaluator[evaluator]
+    Evaluator --> End([End])
+    Direct --> End
 ```
 
-### 2.1 주요 노드 상세 설명
+## 3. 노드별 역할
 
-#### 1) Coordinator (진입점)
-- **역할:** 사용자의 쿼리를 분석하여 '학습 질문(PLAN)'인지 '단순 대화(DIRECT)'인지 분류합니다.
-- **출력:** `next_step` 변수에 `planner` 또는 `direct_response`를 설정합니다.
+### 3.1 coordinator
 
-#### 2) Planner
-- **역할:** 학습 질문인 경우, 어떤 개념을 탐구할지 계획을 세우고 소크라테스식 질문의 목표를 설정합니다.
-- **출력:** 실행 계획(`plan`)을 상태에 저장합니다.
+1. 사용자 마지막 메시지를 분석
+2. 학습 질의면 `planner`, 일반 대화면 `direct_response`로 라우팅
 
-#### 3) Retrieval Node
-- **역할:** 사용자의 질문을 바탕으로 ChromaDB 벡터 스토어에서 관련도가 높은 강의 자료(PDF) 청크를 검색합니다.
-- **출력:** 검색된 문서 리스트를 `retrieved_docs`에 저장합니다.
+### 3.2 planner
 
-#### 4) Supervisor (소크라테스 페르소나)
-- **역할:** 검색된 자료와 현재까지의 대화 맥락을 종합하여 소크라테스식 답변을 생성합니다. 절대 정답을 바로 말하지 않고, 반문이나 힌트를 통해 사용자의 사고를 유도합니다.
-- **출력:** 답변 초안(`draft_answer`)을 생성합니다.
+1. 질의의 핵심 개념과 진행 계획 생성
+2. 계획을 `plan`에 저장
 
-#### 5) Evaluator (품질 검증)
-- **역할:** 생성된 답변이 충분히 소크라테스적인지, 제공된 자료에 근거하고 있는지 검증합니다.
-- **출력:** 검증 결과(`pass/fail`)에 따라 워크플로우를 종료하거나 피드백을 제공합니다.
+### 3.3 retrieval
 
-#### 6) Direct Response
-- **역할:** 인사나 감사 인사 등 학습과 무관한 일상적인 대화에 대해 짧고 친절하게 응답합니다.
+1. 마지막 사용자 질문으로 문서 검색
+2. `src/rag/vectorstore.py`의 하이브리드 검색(BM25 + KNN + RRF) 수행
+3. 결과를 `retrieved_docs`에 저장
 
----
+### 3.4 supervisor
 
-## 3. 로깅 및 모니터링
-에이전트의 실행 과정은 두 가지 방식으로 기록됩니다.
+1. `plan`, `retrieved_docs`, 대화 이력을 결합
+2. 소크라테스식 응답 초안(`draft_answer`) 생성
 
-### 3.1 실시간 콘솔 로그
-터미널에서 실시간으로 각 노드의 진입과 주요 결정을 확인할 수 있습니다.
-- **로그 형식:** `[시간] - SocrAItes.Agent - INFO - --- [노드명] 단계 명칭 ---`
+### 3.5 evaluator
 
-### 3.2 상세 실행 트레이스 파일 (`logs/agent_trace.log`)
-그래프의 각 단계별 **상세 LLM 요청(Prompt)과 응답(Response)**을 별도의 파일에 저장합니다. 디버깅 및 프롬프트 최적화에 활용됩니다.
-- **위치:** `logs/agent_trace.log`
-- **기록 내용:**
-  - 실행된 노드 이름 (STEP)
-  - LLM에게 전달된 전체 프롬프트 (Request)
-  - LLM이 반환한 원본 응답 (Response)
-  - 해당 단계의 최종 결정 또는 결과 (Decision/Result)
+1. 응답 품질 점검(현재는 pass 기반 단순 평가)
+2. 그래프 종료
 
-이 구조를 통해 각 단계가 명확히 분리되어 있어 디버깅이 용이하며, 향후 특정 노드의 LLM 프롬프트를 개선하거나 검색 알고리즘을 변경하기에 매우 유연한 구조를 가지고 있습니다.
+### 3.6 direct_response
+
+1. 인사/잡담/비학습 메시지에 대한 짧은 응답 생성
+2. 그래프 종료
+
+## 4. 로깅
+
+### 4.1 콘솔 로그
+
+노드 진입 및 처리 상태를 표준 로깅으로 출력합니다.
+
+### 4.2 트레이스 로그 (`logs/agent_trace.log`)
+
+각 노드에서 다음 정보를 기록합니다.
+
+1. STEP 이름
+2. LLM Request
+3. LLM Response
+4. Decision/Result
+
+LLM 협업 시, 실패 재현이나 프롬프트 개선은 이 파일을 기준으로 진행하는 것이 가장 빠릅니다.
