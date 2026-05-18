@@ -100,6 +100,19 @@ def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
     return scores
 
 
+SIMILARITY_THRESHOLD = float(os.getenv("SOCRAITES_SIMILARITY_THRESHOLD", "0.4"))
+
+
+def _cosine_similarity(v1: List[float], v2: List[float]) -> float:
+    import math
+    dot_product = sum(a * b for a, b in zip(v1, v2))
+    norm_a = math.sqrt(sum(a * a for a in v1))
+    norm_b = math.sqrt(sum(b * b for b in v2))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot_product / (norm_a * norm_b)
+
+
 def query(query_text: str, k: int = 5) -> List[Tuple[str, float]]:
     ensure_index()
     client = get_client()
@@ -107,25 +120,58 @@ def query(query_text: str, k: int = 5) -> List[Tuple[str, float]]:
     query_vector = embed_query(query_text)
     window = k * 4
 
-    # BM25 검색
+    # BM25 검색 (text와 dense_vector 모두 추출)
     bm25_resp = client.search(
         index=INDEX_NAME,
         body={"query": {"match": {"text": {"query": query_text}}}, "size": window},
     )
-    bm25_hits = {h["_id"]: h["_source"]["text"] for h in bm25_resp["hits"]["hits"]}
+    bm25_hits = {}
+    for h in bm25_resp["hits"]["hits"]:
+        bm25_hits[h["_id"]] = {
+            "text": h["_source"]["text"],
+            "dense_vector": h["_source"].get("dense_vector")
+        }
     bm25_ranking = list(bm25_hits.keys())
 
-    # Dense KNN 검색
+    # Dense KNN 검색 (text와 dense_vector 모두 추출)
     knn_resp = client.search(
         index=INDEX_NAME,
         body={"knn": {"field": "dense_vector", "query_vector": query_vector, "k": window, "num_candidates": window * 2}, "size": window},
     )
-    knn_hits = {h["_id"]: h["_source"]["text"] for h in knn_resp["hits"]["hits"]}
+    knn_hits = {}
+    for h in knn_resp["hits"]["hits"]:
+        knn_hits[h["_id"]] = {
+            "text": h["_source"]["text"],
+            "dense_vector": h["_source"].get("dense_vector")
+        }
     knn_ranking = list(knn_hits.keys())
 
-    # RRF 합산
+    # RRF 합산 대상 중 코사인 유사도 필터링 수행
     all_docs = {**bm25_hits, **knn_hits}
-    rrf_scores = _rrf([bm25_ranking, knn_ranking])
+    
+    filtered_bm25_ranking = []
+    filtered_knn_ranking = []
+    
+    for doc_id in bm25_ranking:
+        doc_data = all_docs.get(doc_id)
+        if doc_data and doc_data["dense_vector"]:
+            sim = _cosine_similarity(query_vector, doc_data["dense_vector"])
+            if sim >= SIMILARITY_THRESHOLD:
+                filtered_bm25_ranking.append(doc_id)
+            else:
+                logger.debug(f"Filtering out BM25 hit {doc_id} due to low similarity: {sim:.4f}")
+                
+    for doc_id in knn_ranking:
+        doc_data = all_docs.get(doc_id)
+        if doc_data and doc_data["dense_vector"]:
+            sim = _cosine_similarity(query_vector, doc_data["dense_vector"])
+            if sim >= SIMILARITY_THRESHOLD:
+                filtered_knn_ranking.append(doc_id)
+            else:
+                logger.debug(f"Filtering out KNN hit {doc_id} due to low similarity: {sim:.4f}")
+
+    # 필터링된 결과로 RRF 합산
+    rrf_scores = _rrf([filtered_bm25_ranking, filtered_knn_ranking])
     top_k = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
-    return [(all_docs[doc_id], score) for doc_id, score in top_k if doc_id in all_docs]
+    return [(all_docs[doc_id]["text"], score) for doc_id, score in top_k if doc_id in all_docs]

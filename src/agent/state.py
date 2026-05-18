@@ -32,6 +32,7 @@ class AgentState(TypedDict, total=False):
     draft_answer: str
     evaluation: Dict[str, Any]
     session_id: str
+    contextualized_query: str
 
 # Default initial state
 DEFAULT_STATE: AgentState = {
@@ -44,4 +45,5 @@ DEFAULT_STATE: AgentState = {
     "draft_answer": "",
     "evaluation": {},
     "session_id": "",
+    "contextualized_query": "",
 }
