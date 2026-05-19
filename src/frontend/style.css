@@ -76,6 +76,28 @@ body {
 .logo-text h1 { font-family: 'Playfair Display', serif; font-size: 1.2rem; color: var(--primary); font-weight: 700; }
 .logo-text span { font-size: 0.6rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; }
 .sidebar-toggle {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
+    transition: var(--transition);
+}
+.sidebar-toggle:hover {
+    color: var(--primary);
+    background: rgba(255, 255, 255, 0.05);
+}
+.sidebar-toggle svg {
+    width: 17px !important;
+    height: 17px !important;
+}
+
+.theme-toggle {
     margin-left: auto;
     background: transparent;
     border: none;
@@ -84,18 +106,18 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 4px;
+    width: 32px;
+    height: 32px;
+    border-radius: 6px;
     transition: var(--transition);
 }
-.sidebar-toggle:hover {
+.theme-toggle:hover {
     color: var(--primary);
     background: rgba(255, 255, 255, 0.05);
 }
-.sidebar-toggle svg {
-    width: 14px !important;
-    height: 14px !important;
+.theme-toggle svg {
+    width: 17px !important;
+    height: 17px !important;
 }
 
 
@@ -331,7 +353,8 @@ textarea {
     white-space: nowrap;
     flex: 1;
 }
-.doc-item-left svg {
+.doc-item-left svg,
+.doc-item > svg {
     width: 14px !important;
     height: 14px !important;
     color: var(--primary);
@@ -371,6 +394,71 @@ textarea {
     padding: 10px;
     border: 1px dashed var(--border);
     border-radius: var(--radius-md);
+}
+
+/* Collapsible retrieved docs */
+.doc-item-collapsible {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font-size: 0.75rem;
+    transition: var(--transition);
+    overflow: hidden;
+}
+.doc-item-collapsible:hover {
+    border-color: var(--border-hover);
+}
+.doc-item-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    cursor: pointer;
+    user-select: none;
+}
+.doc-title-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 100px;
+}
+.doc-page-badge {
+    background: rgba(212, 175, 55, 0.15);
+    color: var(--primary);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+.doc-expand-icon {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    transition: transform 0.2s ease;
+    margin-left: 8px;
+}
+.doc-snippet-content {
+    display: none;
+    padding: 10px;
+    background: rgba(0, 0, 0, 0.25);
+    border-top: 1px solid var(--border);
+    font-size: 0.7rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 150px;
+    overflow-y: auto;
+}
+.doc-item-collapsible.active .doc-snippet-content {
+    display: block;
+}
+.doc-item-collapsible.active .doc-expand-icon {
+    transform: rotate(180deg);
+    color: var(--primary);
 }
 
 /* Node progress card styles */

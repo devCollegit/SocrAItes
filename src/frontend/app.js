@@ -165,15 +165,32 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.retrieved_docs && data.retrieved_docs.length > 0) {
                 docCount = data.retrieved_docs.length;
                 statDocs.innerText = docCount;
-                docsList.innerHTML = data.retrieved_docs.map(doc => {
-                    const sourceName = doc.metadata?.source || (Array.isArray(doc) ? '강의 자료 일부' : '강의 자료 일부');
+                docsList.innerHTML = data.retrieved_docs.map((doc, idx) => {
+                    const sourceName = doc.metadata?.source || '강의 자료 일부';
+                    const pageNum = doc.metadata?.page || 1;
+                    const text = doc.text || '';
                     return `
-                        <div class="doc-item">
-                            <svg viewBox="0 0 20 20" fill="currentColor"><path d="M7 3a1 1 0 000 2h6a1 1 0 100-2H7zM4 7a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1zM2 11a2 2 0 012-2h12a2 2 0 012 2v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-4z"/></svg>
-                            <span>${sourceName}</span>
+                        <div class="doc-item-collapsible" data-index="${idx}">
+                            <div class="doc-item-header">
+                                <div class="doc-item-left">
+                                    <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd"/></svg>
+                                    <span class="doc-title-text" title="${sourceName}">${sourceName}</span>
+                                    <span class="doc-page-badge">p.${pageNum}</span>
+                                </div>
+                                <span class="doc-expand-icon">▼</span>
+                            </div>
+                            <div class="doc-snippet-content">${text}</div>
                         </div>
                     `;
                 }).join('');
+
+                // Add toggle click handlers
+                docsList.querySelectorAll('.doc-item-header').forEach(header => {
+                    header.addEventListener('click', () => {
+                        const item = header.parentElement;
+                        item.classList.toggle('active');
+                    });
+                });
             }
 
 

@@ -113,14 +113,14 @@ def _cosine_similarity(v1: List[float], v2: List[float]) -> float:
     return dot_product / (norm_a * norm_b)
 
 
-def query(query_text: str, k: int = 5) -> List[Tuple[str, float]]:
+def query(query_text: str, k: int = 5) -> List[Dict[str, Any]]:
     ensure_index()
     client = get_client()
 
     query_vector = embed_query(query_text)
     window = k * 4
 
-    # BM25 검색 (text와 dense_vector 모두 추출)
+    # BM25 검색 (text, dense_vector, source, page 모두 추출)
     bm25_resp = client.search(
         index=INDEX_NAME,
         body={"query": {"match": {"text": {"query": query_text}}}, "size": window},
@@ -129,11 +129,13 @@ def query(query_text: str, k: int = 5) -> List[Tuple[str, float]]:
     for h in bm25_resp["hits"]["hits"]:
         bm25_hits[h["_id"]] = {
             "text": h["_source"]["text"],
-            "dense_vector": h["_source"].get("dense_vector")
+            "dense_vector": h["_source"].get("dense_vector"),
+            "source": h["_source"].get("source", "Unknown"),
+            "page": h["_source"].get("page", 1),
         }
     bm25_ranking = list(bm25_hits.keys())
 
-    # Dense KNN 검색 (text와 dense_vector 모두 추출)
+    # Dense KNN 검색 (text, dense_vector, source, page 모두 추출)
     knn_resp = client.search(
         index=INDEX_NAME,
         body={"knn": {"field": "dense_vector", "query_vector": query_vector, "k": window, "num_candidates": window * 2}, "size": window},
@@ -142,7 +144,9 @@ def query(query_text: str, k: int = 5) -> List[Tuple[str, float]]:
     for h in knn_resp["hits"]["hits"]:
         knn_hits[h["_id"]] = {
             "text": h["_source"]["text"],
-            "dense_vector": h["_source"].get("dense_vector")
+            "dense_vector": h["_source"].get("dense_vector"),
+            "source": h["_source"].get("source", "Unknown"),
+            "page": h["_source"].get("page", 1),
         }
     knn_ranking = list(knn_hits.keys())
 
@@ -174,7 +178,17 @@ def query(query_text: str, k: int = 5) -> List[Tuple[str, float]]:
     rrf_scores = _rrf([filtered_bm25_ranking, filtered_knn_ranking])
     top_k = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
-    return [(all_docs[doc_id]["text"], score) for doc_id, score in top_k if doc_id in all_docs]
+    return [
+        {
+            "text": all_docs[doc_id]["text"],
+            "score": score,
+            "metadata": {
+                "source": all_docs[doc_id]["source"],
+                "page": all_docs[doc_id]["page"],
+            }
+        }
+        for doc_id, score in top_k if doc_id in all_docs
+    ]
 
 
 def get_registered_documents() -> List[str]:
