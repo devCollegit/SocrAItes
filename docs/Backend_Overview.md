@@ -14,7 +14,11 @@
 	- PDF 파일 임시 저장
 	- `process_pdf`로 텍스트 청킹
 	- `add_documents`로 Elasticsearch 적재
-3. `GET /health`
+3. `GET /documents`
+	- Elasticsearch 인덱스에서 고유 파일 이름 목록 집계 후 반환
+4. `DELETE /documents/{filename}`
+	- 파일에 해당하는 지식 조각들을 Elasticsearch에서 삭제 (`delete_by_query`)
+5. `GET /health`
 	- 서비스 상태 반환
 
 ### 1.2 정적 프론트엔드 서빙
@@ -60,6 +64,8 @@ Elasticsearch 기반 인덱싱/검색을 담당합니다.
 1. 인덱스: `socratic_docs`
 2. 매핑: 한국어 analyzer + dense_vector(1024)
 3. 검색: BM25 + Dense KNN + RRF 결합
+4. 등록 문서 관리: `get_registered_documents()` (Terms Aggregation), `delete_document(source_name)` (delete_by_query)
+
 
 ## 4. Data Layer (`src/db/`)
 

@@ -190,3 +190,15 @@ flowchart TD
   * `plan`: 플래너가 수립한 학습 이정표 스키마 객체.
   * `retrieved_docs`: 코사인 유사도 0.4 검증을 통과해 살아남은 정예 강의자료 텍스트 조각 목록.
   * `draft_answer`: SUPERVISOR가 설계한 답변 최종 후보.
+
+---
+
+## 5. RAG 문서 관리 메커니즘 (RAG Document Management)
+
+Elasticsearch에 등록된 강의자료(PDF) 목록을 실시간으로 관리(조회 및 삭제)하여 지속성을 부여합니다.
+
+* **동작 원리**:
+  1. **조회 (`GET /documents`)**: Elasticsearch 인덱스의 `source` 필드(파일명)를 대상으로 Terms Aggregation을 수행하여 중복 없이 현재 색인된 파일명 목록을 동적으로 추출합니다. 인덱스가 존재하지 않는 초기 단계에는 빈 리스트 `[]`를 안전하게 반환합니다.
+  2. **삭제 (`DELETE /documents/{filename}`)**: 선택한 파일명의 지식 조각들을 대상으로 `delete_by_query`를 수행해 Elasticsearch 내 해당 문서의 벡터 및 텍스트 데이터를 영구 삭제합니다. 이때 `refresh=True` 옵션을 적용해 실시간 UI 갱신을 보장합니다.
+  3. **UI 갱신**: 프론트엔드가 로드될 때와 문서를 추가/삭제할 때 자동으로 목록을 동기화하여 서비스 재설정이나 UI 새로고침 시에도 등록된 문서 현황을 영구히 표시합니다.
+

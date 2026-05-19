@@ -175,3 +175,51 @@ def query(query_text: str, k: int = 5) -> List[Tuple[str, float]]:
     top_k = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
 
     return [(all_docs[doc_id]["text"], score) for doc_id, score in top_k if doc_id in all_docs]
+
+
+def get_registered_documents() -> List[str]:
+    client = get_client()
+    if not client.indices.exists(index=INDEX_NAME):
+        return []
+
+    body = {
+        "size": 0,
+        "aggs": {
+            "unique_sources": {
+                "terms": {
+                    "field": "source",
+                    "size": 10000
+                }
+            }
+        }
+    }
+    try:
+        resp = client.search(index=INDEX_NAME, body=body)
+        buckets = resp.get("aggregations", {}).get("unique_sources", {}).get("buckets", [])
+        return [bucket["key"] for bucket in buckets]
+    except Exception as e:
+        logger.error(f"Failed to get registered documents: {e}")
+        return []
+
+
+def delete_document(source_name: str) -> int:
+    client = get_client()
+    if not client.indices.exists(index=INDEX_NAME):
+        return 0
+
+    body = {
+        "query": {
+            "term": {
+                "source": source_name
+            }
+        }
+    }
+    try:
+        resp = client.delete_by_query(index=INDEX_NAME, body=body, refresh=True)
+        deleted = resp.get("deleted", 0)
+        logger.info(f"Deleted {deleted} chunks for source: {source_name}")
+        return deleted
+    except Exception as e:
+        logger.error(f"Failed to delete document {source_name}: {e}")
+        return 0
+

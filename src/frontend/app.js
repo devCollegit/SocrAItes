@@ -18,6 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const quickChips = document.querySelectorAll('.chip');
     const attachBtn = document.getElementById('attach-btn');
     const pdfUpload = document.getElementById('pdf-upload');
+    const registeredDocsList = document.getElementById('registered-docs-list');
 
     // State
     let messages = [];
@@ -105,8 +106,43 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (!response.ok) throw new Error('API request failed');
 
-            const data = await response.json();
-            
+            // Read the SSE response stream
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+            let finalResult = null;
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop();
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        const jsonStr = line.slice(6).trim();
+                        if (!jsonStr) continue;
+                        try {
+                            const data = JSON.parse(jsonStr);
+                            if (data.type === 'node_end') {
+                                updateProgressStep(loadingId, data.node, data.output);
+                            } else if (data.type === 'final_result') {
+                                finalResult = data;
+                            } else if (data.type === 'error') {
+                                throw new Error(data.detail);
+                            }
+                        } catch (e) {
+                            console.error('Error parsing stream chunk:', e);
+                        }
+                    }
+                }
+            }
+
+            if (!finalResult) throw new Error('No final result returned from stream');
+            const data = finalResult;
+
             // Update State
             sessionId = data.session_id;
             messages.push({ role: 'user', content: text });
@@ -129,13 +165,17 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.retrieved_docs && data.retrieved_docs.length > 0) {
                 docCount = data.retrieved_docs.length;
                 statDocs.innerText = docCount;
-                docsList.innerHTML = data.retrieved_docs.map(doc => `
-                    <div class="doc-item">
-                        <svg viewBox="0 0 20 20" fill="currentColor"><path d="M7 3a1 1 0 000 2h6a1 1 0 100-2H7zM4 7a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1zM2 11a2 2 0 012-2h12a2 2 0 012 2v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-4z"/></svg>
-                        <span>${doc.metadata?.source || '강의 자료 일부'}</span>
-                    </div>
-                `).join('');
+                docsList.innerHTML = data.retrieved_docs.map(doc => {
+                    const sourceName = doc.metadata?.source || (Array.isArray(doc) ? '강의 자료 일부' : '강의 자료 일부');
+                    return `
+                        <div class="doc-item">
+                            <svg viewBox="0 0 20 20" fill="currentColor"><path d="M7 3a1 1 0 000 2h6a1 1 0 100-2H7zM4 7a1 1 0 011-1h10a1 1 0 110 2H5a1 1 0 01-1-1zM2 11a2 2 0 012-2h12a2 2 0 012 2v4a2 2 0 01-2 2H4a2 2 0 01-2-2v-4z"/></svg>
+                            <span>${sourceName}</span>
+                        </div>
+                    `;
+                }).join('');
             }
+
 
         } catch (error) {
             console.error(error);
@@ -175,8 +215,10 @@ document.addEventListener('DOMContentLoaded', () => {
         msgDiv.className = 'message ai';
         msgDiv.id = id;
         msgDiv.innerHTML = `
-            <div class="message-content">
-                <div class="typing-indicator">
+            <div class="message-content node-progress-card">
+                <div class="progress-title">⚙️ AI 에이전트 분석 및 추론 중...</div>
+                <div class="node-steps" id="${id}-steps"></div>
+                <div class="typing-indicator" id="${id}-typing">
                     <span></span><span></span><span></span>
                 </div>
             </div>
@@ -190,6 +232,53 @@ document.addEventListener('DOMContentLoaded', () => {
         const el = document.getElementById(id);
         if (el) el.remove();
     }
+
+    const nodeLabels = {
+        'query_contextualizer': '🔍 질문 분석 및 문맥 이해',
+        'coordinator': '🧭 질문 유형 분류 및 탐구 결정',
+        'planner': '📋 Socratic 학습 계획 수립',
+        'retrieval': '📚 Elasticsearch 강의 자료 검색',
+        'supervisor': '🧠 Socratic 튜터 답변 생성',
+        'evaluator': '⚖️ 답변 품질 검증 및 자가 교정',
+        'direct_response': '💬 일반 안내 및 대화 답변 작성'
+    };
+
+    function updateProgressStep(loadingId, node, output) {
+        const stepsContainer = document.getElementById(`${loadingId}-steps`);
+        if (!stepsContainer) return;
+
+        let detail = '';
+        if (node === 'query_contextualizer') {
+            detail = `재구성 결과: "${output.contextualized_query}"`;
+        } else if (node === 'coordinator') {
+            detail = `판별 결과: ${output.next_step === 'planner' ? '개념 학습 (PLAN)' : '일반 대화 (DIRECT)'}`;
+        } else if (node === 'planner') {
+            detail = `Socratic 튜터링 가이드 구성 완료`;
+        } else if (node === 'retrieval') {
+            const count = output.retrieved_docs ? output.retrieved_docs.length : 0;
+            detail = `검색 완료 (${count}개 조각 참조)`;
+        } else if (node === 'supervisor') {
+            detail = `소크라테스식 응답 가이드라인 작성 완료`;
+        } else if (node === 'evaluator') {
+            detail = `품질 기준 검사 통과`;
+        } else if (node === 'direct_response') {
+            detail = `일반 대화형 응답 생성 완료`;
+        }
+
+        const label = nodeLabels[node] || node;
+        const stepDiv = document.createElement('div');
+        stepDiv.className = 'node-step';
+        stepDiv.innerHTML = `
+            <div class="node-step-header">
+                <span class="node-step-icon">✅</span>
+                <span class="node-step-label">${label}</span>
+            </div>
+            ${detail ? `<div class="node-step-detail">${detail}</div>` : ''}
+        `;
+        stepsContainer.appendChild(stepDiv);
+        scrollToBottom();
+    }
+
 
     function scrollToBottom() {
         chatMessages.scrollTo({
@@ -239,8 +328,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     addMessage(`✅ **${data.filename}** 등록 완료! (${data.chunks_added}개의 지식 조각 추출)`, 'system');
                 }
                 
-                // Update doc count (dummy update since we don't know total docs in store)
-                // In a real app, you might fetch the current count or list
+                // Update registered documents list
+                await fetchRegisteredDocuments();
+
             } catch (error) {
                 console.error(error);
                 addMessage(`❌ 업로드 실패: ${error.message}`, 'system');
@@ -265,4 +355,70 @@ document.addEventListener('DOMContentLoaded', () => {
             docsList.innerHTML = '<div class="docs-empty">참조 자료 없음</div>';
         }
     });
+
+    // Fetch and render registered PDF documents
+    async function fetchRegisteredDocuments() {
+        try {
+            const response = await fetch('/documents');
+            if (!response.ok) throw new Error('Failed to fetch documents');
+            const data = await response.json();
+            
+            if (data.documents && data.documents.length > 0) {
+                registeredDocsList.innerHTML = data.documents.map(filename => `
+                    <div class="doc-item" data-filename="${filename}">
+                        <div class="doc-item-left">
+                            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd"/></svg>
+                            <span title="${filename}">${filename}</span>
+                        </div>
+                        <button class="doc-delete-btn" title="삭제" data-filename="${filename}">
+                            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+                        </button>
+                    </div>
+                `).join('');
+                
+                // Add delete event listeners
+                registeredDocsList.querySelectorAll('.doc-delete-btn').forEach(btn => {
+                    btn.addEventListener('click', async (e) => {
+                        const filename = btn.dataset.filename;
+                        if (confirm(`"${filename}" 문서를 데이터베이스에서 삭제하시겠습니까? 관련 모든 지식이 삭제됩니다.`)) {
+                            await deleteRegisteredDocument(filename);
+                        }
+                    });
+                });
+            } else {
+                registeredDocsList.innerHTML = '<div class="docs-empty">등록된 문서 없음</div>';
+            }
+        } catch (error) {
+            console.error('Error fetching registered documents:', error);
+            registeredDocsList.innerHTML = '<div class="docs-empty">목록 로드 실패</div>';
+        }
+    }
+
+    // Delete a registered document
+    async function deleteRegisteredDocument(filename) {
+        addMessage(`⚙️ **${filename}** 삭제를 진행 중입니다...`, 'system');
+        try {
+            const response = await fetch(`/documents/${encodeURIComponent(filename)}`, {
+                method: 'DELETE'
+            });
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'Delete failed');
+            }
+            const data = await response.json();
+            if (data.status === 'success') {
+                addMessage(`🗑️ **${filename}** 삭제 완료! (총 ${data.deleted_chunks}개의 지식 조각이 제거되었습니다.)`, 'system');
+            } else {
+                addMessage(`⚠️ **${filename}** 을 찾을 수 없거나 이미 삭제되었습니다.`, 'system');
+            }
+            await fetchRegisteredDocuments();
+        } catch (error) {
+            console.error('Error deleting document:', error);
+            addMessage(`❌ 삭제 실패: ${error.message}`, 'system');
+        }
+    }
+
+    // Initial fetch of registered documents
+    fetchRegisteredDocuments();
 });
+

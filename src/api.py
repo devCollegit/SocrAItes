@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import shutil
@@ -9,6 +9,8 @@ import uuid
 import os
 import logging
 import traceback
+import json
+
 
 # Load .env file BEFORE anything else (so OPENAI_API_KEY is available)
 from dotenv import load_dotenv
@@ -27,7 +29,7 @@ logger = logging.getLogger("socraites.api")
 from .agent.graph import GRAPH
 from .agent.state import DEFAULT_STATE
 from .rag.document_processor import process_pdf, compute_file_hash
-from .rag.vectorstore import add_documents
+from .rag.vectorstore import add_documents, get_registered_documents, delete_document
 
 app = FastAPI(title="SocrAItes API")
 
@@ -70,12 +72,11 @@ class ChatResponse(BaseModel):
     retrieved_docs: List[Any] = []
     plan: Optional[str] = None
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat")
 async def chat(request: ChatRequest):
     session_id = request.session_id or str(uuid.uuid4())
     logger.info(f"[/chat] session={session_id} | messages={len(request.messages)} | depth={request.socratic_depth}")
     try:
-        # Prepare state for LangGraph
         initial_messages = [{"role": m.role, "content": m.content} for m in request.messages]
         logger.debug(f"[/chat] last user message: {initial_messages[-1]['content'][:100] if initial_messages else '(empty)'}")
         
@@ -85,24 +86,47 @@ async def chat(request: ChatRequest):
             "socratic_depth": request.socratic_depth,
         })
         
-        # Execute Graph
-        logger.debug("[/chat] Compiling LangGraph...")
         runnable = GRAPH.compile()
-        logger.debug("[/chat] Invoking graph...")
-        result = runnable.invoke(state)
-        logger.info(f"[/chat] Graph completed. draft_answer length={len(result.get('draft_answer',''))}")
         
-        return ChatResponse(
-            answer=result.get("draft_answer", "I'm sorry, I couldn't formulate a response."),
-            session_id=session_id,
-            retrieved_docs=result.get("retrieved_docs", []),
-            plan=result.get("plan")
-        )
+        async def event_generator():
+            current_state = state.copy()
+            try:
+                async for event in runnable.astream(current_state, stream_mode="updates"):
+                    for node_name, node_output in event.items():
+                        current_state.update(node_output)
+                        
+                        # Serialize safely
+                        serializable_output = {}
+                        for k, v in node_output.items():
+                            if k in ["contextualized_query", "next_step", "plan", "draft_answer", "evaluation", "retrieved_docs"]:
+                                serializable_output[k] = v
+                        
+                        data = {
+                            "type": "node_end",
+                            "node": node_name,
+                            "output": serializable_output
+                        }
+                        yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+                
+                # Send final result at the end
+                final_data = {
+                    "type": "final_result",
+                    "session_id": session_id,
+                    "answer": current_state.get("draft_answer", "I'm sorry, I couldn't formulate a response."),
+                    "retrieved_docs": current_state.get("retrieved_docs", []),
+                    "plan": current_state.get("plan")
+                }
+                yield f"data: {json.dumps(final_data, ensure_ascii=False)}\n\n"
+            except Exception as e:
+                logger.error(f"[/chat] Stream Error: {e}")
+                yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
+                
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
     except Exception as e:
-        # Log full traceback so we can diagnose the root cause
         logger.error(f"[/chat] ❌ Exception: {type(e).__name__}: {e}")
         logger.error("[/chat] Full traceback:\n" + traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
 
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
@@ -152,6 +176,35 @@ async def upload_pdf(file: UploadFile = File(...)):
         # Clean up temp file
         if os.path.exists(file_path):
             os.remove(file_path)
+
+
+@app.get("/documents")
+async def list_documents():
+    """Get the list of all registered PDF filenames in the vector store."""
+    try:
+        docs = get_registered_documents()
+        return {"documents": docs}
+    except Exception as e:
+        logger.error(f"[/documents] Error listing documents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/documents/{filename}")
+async def delete_pdf_document(filename: str):
+    """Delete all chunks associated with a specific PDF filename from the vector store."""
+    try:
+        # Prevent path traversal just in case
+        safe_filename = os.path.basename(filename)
+        deleted_count = delete_document(safe_filename)
+        return {
+            "filename": safe_filename,
+            "status": "success" if deleted_count > 0 else "not_found",
+            "deleted_chunks": deleted_count
+        }
+    except Exception as e:
+        logger.error(f"[/documents/{filename}] Error deleting document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/health")
 async def health():
