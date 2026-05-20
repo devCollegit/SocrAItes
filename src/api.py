@@ -71,6 +71,7 @@ class ChatResponse(BaseModel):
     session_id: str
     retrieved_docs: List[Any] = []
     plan: Optional[str] = None
+    tool_results: List[Any] = []
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
@@ -98,7 +99,7 @@ async def chat(request: ChatRequest):
                         # Serialize safely
                         serializable_output = {}
                         for k, v in node_output.items():
-                            if k in ["contextualized_query", "next_step", "plan", "draft_answer", "evaluation", "retrieved_docs"]:
+                            if k in ["contextualized_query", "next_step", "plan", "draft_answer", "evaluation", "retrieved_docs", "tool_results"]:
                                 serializable_output[k] = v
                         
                         data = {
@@ -108,13 +109,14 @@ async def chat(request: ChatRequest):
                         }
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                 
-                # Send final result at the end
+                # Send final result at the end (with tool_results)
                 final_data = {
                     "type": "final_result",
                     "session_id": session_id,
                     "answer": current_state.get("draft_answer", "I'm sorry, I couldn't formulate a response."),
                     "retrieved_docs": current_state.get("retrieved_docs", []),
-                    "plan": current_state.get("plan")
+                    "plan": current_state.get("plan"),
+                    "tool_results": current_state.get("tool_results", [])
                 }
                 yield f"data: {json.dumps(final_data, ensure_ascii=False)}\n\n"
             except Exception as e:

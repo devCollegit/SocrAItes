@@ -1,5 +1,6 @@
 import os
 import logging
+import json
 from datetime import datetime
 from typing import List, Dict, Any, Literal
 
@@ -11,6 +12,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langgraph.graph import StateGraph, END
 
 from .state import AgentState, DEFAULT_STATE
+from src.tools.learning_tools import TOOL_MAP, LANGCHAIN_TOOLS
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -94,6 +96,44 @@ def _get_content(response) -> str:
     if hasattr(response, "content"):
         return response.content
     return str(response)
+
+
+def _extract_tool_calls(response: Any) -> List[Dict[str, Any]]:
+    tool_calls = getattr(response, "tool_calls", None)
+    if tool_calls:
+        return tool_calls
+    additional_kwargs = getattr(response, "additional_kwargs", {}) or {}
+    return additional_kwargs.get("tool_calls", [])
+
+
+def _run_tool_calls(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    results: List[Dict[str, Any]] = []
+    for tc in tool_calls:
+        fn_info = tc.get("function", {})
+        tool_name = fn_info.get("name")
+        raw_args = fn_info.get("arguments", "{}")
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+        except json.JSONDecodeError:
+            args = {}
+
+        tool_fn = TOOL_MAP.get(tool_name)
+        if not tool_fn:
+            results.append({
+                "tool": tool_name,
+                "ok": False,
+                "error": f"Unknown tool: {tool_name}",
+            })
+            continue
+
+        try:
+            output = tool_fn(args)
+            results.append({"tool": tool_name, "ok": True, "output": output})
+        except Exception as e:
+            logger.exception("Tool execution failed: %s", tool_name)
+            results.append({"tool": tool_name, "ok": False, "error": str(e)})
+
+    return results
 
 # ---------------------------------------------------------------------------
 # LLM Configuration
@@ -281,6 +321,13 @@ Your goal is to guide the student to think critically about operating systems an
 1. Provide a very brief, high-level explanation, hint, or conceptual summary (1-2 sentences max) based on the retrieved lecture materials to anchor their thoughts. Do NOT give a complete, fully detailed direct answer.
 2. Follow up immediately with a thought-provoking, meta-cognitive Socratic question.
 
+Tool Usage Policy (very important):
+- If the learner asks for quiz/problem practice, call tool `generate_quiz`.
+- If the learner asks to plan/register review schedule, call tool `schedule_review`.
+- If the learner asks to save a weak concept/mistake, call tool `save_weakness`.
+- If the learner explicitly asks for direct answer mode (e.g., "그냥 답 알려줘"), call tool `escape_to_answer`.
+- When tool usage is appropriate, call the tool first before final response.
+
 What is a Meta-cognitive Question?
 It is a question that encourages students to monitor and analyze their own thinking process. Examples:
 - "왜 그러한 방식이어야만 할까요? 다른 대안이 있다면 어떤 문제가 생길까요?" (Reasoning/Design choices)
@@ -309,8 +356,29 @@ Rules:
         elif m["role"] == "assistant":
             messages.append(AIMessage(content=m["content"]))
             
-    response = llm.invoke(messages)
-    state["draft_answer"] = _get_content(response)
+    response = llm.bind_tools(LANGCHAIN_TOOLS).invoke(messages)
+    draft = _get_content(response)
+    tool_calls = _extract_tool_calls(response)
+    tool_results = _run_tool_calls(tool_calls) if tool_calls else []
+
+    if tool_results:
+        summary_prompt = f"""You are SocrAItes. A tool call was executed during tutoring.
+Use tool results below and produce a concise Korean response for the learner.
+
+Tool Results JSON:
+{json.dumps(tool_results, ensure_ascii=False)}
+
+Rules:
+1. If escape_to_answer succeeded, provide a direct helpful answer in Korean.
+2. Otherwise, mention tool outcome clearly, then ask one short Socratic follow-up question.
+3. Keep it under 6 lines.
+"""
+        final_response = llm.invoke([SystemMessage(content=summary_prompt), HumanMessage(content="최종 응답을 작성해줘.")])
+        state["draft_answer"] = _get_content(final_response)
+    else:
+        state["draft_answer"] = draft
+
+    state["tool_results"] = tool_results
     
     logger.info(f"Draft Answer Generated (length: {len(state['draft_answer'])})")
     _log_trace(
@@ -326,7 +394,11 @@ Rules:
             "Conversation History Stream": "\n".join([f"  {m['role'].upper()}: {m['content']}" for m in history])
         },
         response=state["draft_answer"],
-        decision="Socratic Draft Response generated and saved to state."
+        decision={
+            "Tool Calls": len(tool_calls),
+            "Tool Results": tool_results,
+            "Result": "Socratic Draft Response generated and saved to state."
+        }
     )
     return state
 
