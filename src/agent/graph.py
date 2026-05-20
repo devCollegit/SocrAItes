@@ -99,23 +99,51 @@ def _get_content(response) -> str:
 
 
 def _extract_tool_calls(response: Any) -> List[Dict[str, Any]]:
+    """Extract tool calls from LangChain response.
+    
+    Handles both:
+    1. LangChain ToolCall format: {"id": "...", "name": "...", "args": {...}}
+    2. OpenAI API format: {"type": "function", "function": {"name": "...", "arguments": "..."}}
+    """
     tool_calls = getattr(response, "tool_calls", None)
     if tool_calls:
         return tool_calls
+    
+    # Fallback to additional_kwargs (less common in recent LangChain)
     additional_kwargs = getattr(response, "additional_kwargs", {}) or {}
     return additional_kwargs.get("tool_calls", [])
 
 
 def _run_tool_calls(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Execute tool calls and return results.
+    
+    Handles LangChain ToolCall format:
+    - tc.get("name") = tool name
+    - tc.get("args") = arguments dict (already parsed by LangChain)
+    """
     results: List[Dict[str, Any]] = []
     for tc in tool_calls:
-        fn_info = tc.get("function", {})
-        tool_name = fn_info.get("name")
-        raw_args = fn_info.get("arguments", "{}")
-        try:
-            args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
-        except json.JSONDecodeError:
-            args = {}
+        # LangChain ToolCall format
+        tool_name = tc.get("name")
+        args = tc.get("args", {})
+        
+        # Fallback: OpenAI API format (unlikely but handles edge cases)
+        if not tool_name:
+            fn_info = tc.get("function", {})
+            tool_name = fn_info.get("name")
+            raw_args = fn_info.get("arguments", "{}")
+            try:
+                args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+            except json.JSONDecodeError:
+                args = {}
+
+        if not tool_name:
+            results.append({
+                "tool": None,
+                "ok": False,
+                "error": f"Tool name not found in call",
+            })
+            continue
 
         tool_fn = TOOL_MAP.get(tool_name)
         if not tool_fn:
@@ -127,6 +155,7 @@ def _run_tool_calls(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             continue
 
         try:
+            logger.info(f"Executing tool: {tool_name} with args: {args}")
             output = tool_fn(args)
             results.append({"tool": tool_name, "ok": True, "output": output})
         except Exception as e:
