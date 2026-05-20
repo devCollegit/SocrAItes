@@ -164,6 +164,36 @@ def _run_tool_calls(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     return results
 
+
+def _format_quiz_response(tool_results: List[Dict[str, Any]]) -> str | None:
+    """Create a deterministic learner-facing quiz message.
+
+    Returns None when no successful quiz result is present.
+    """
+    for result in tool_results:
+        if result.get("tool") != "generate_quiz" or not result.get("ok"):
+            continue
+        output = result.get("output") or {}
+        quiz_items = output.get("quiz") if isinstance(output, dict) else None
+        if not isinstance(quiz_items, list) or not quiz_items:
+            continue
+
+        lines = ["퀴즈 5문항을 준비했어요. 한 번에 풀어보세요.", ""]
+        for idx, item in enumerate(quiz_items, start=1):
+            question = item.get("question", "질문")
+            options = item.get("options", [])
+            lines.append(f"{idx}. {question}")
+            if isinstance(options, list) and len(options) >= 4:
+                lines.append(f"A. {options[0]}")
+                lines.append(f"B. {options[1]}")
+                lines.append(f"C. {options[2]}")
+                lines.append(f"D. {options[3]}")
+            lines.append("")
+
+        lines.append("답안은 예: 1:A, 2:B, 3:A, 4:C, 5:D 형태로 보내주세요.")
+        return "\n".join(lines)
+    return None
+
 # ---------------------------------------------------------------------------
 # LLM Configuration
 # ---------------------------------------------------------------------------
@@ -391,6 +421,12 @@ Rules:
     tool_results = _run_tool_calls(tool_calls) if tool_calls else []
 
     if tool_results:
+        quiz_message = _format_quiz_response(tool_results)
+        if quiz_message:
+            state["draft_answer"] = quiz_message
+            state["tool_results"] = tool_results
+            return state
+
         summary_prompt = f"""You are SocrAItes. A tool call was executed during tutoring.
 Use tool results below and produce a concise Korean response for the learner.
 
@@ -400,7 +436,7 @@ Tool Results JSON:
 Rules:
 1. If escape_to_answer succeeded, provide a direct helpful answer in Korean.
 2. Otherwise, mention tool outcome clearly, then ask one short Socratic follow-up question.
-3. Keep it under 6 lines.
+3. Keep it concise.
 """
         final_response = llm.invoke([SystemMessage(content=summary_prompt), HumanMessage(content="최종 응답을 작성해줘.")])
         state["draft_answer"] = _get_content(final_response)

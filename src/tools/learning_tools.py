@@ -78,11 +78,62 @@ def generate_quiz(request: Dict[str, Any]) -> Dict[str, Any]:
     """
     req = QuizRequest(**request)
     logger.info("generate_quiz called with %s", req)
-    # Dummy quiz – replace with real LLM generation later.
-    quiz = [
-        {"question": f"What is the definition of {req.topic}?", "options": ["A", "B", "C", "D"], "answer": "A"}
-        for _ in range(req.num_questions)
+    # MVP deterministic quiz templates. Keep questions distinct so that
+    # the learner can solve multiple items in one generation.
+    templates = [
+        {
+            "question": f"{req.topic}의 가장 적절한 정의는 무엇인가요?",
+            "options": [
+                "시스템 자원을 효율적으로 관리하는 핵심 개념",
+                "단순한 UI 디자인 원칙",
+                "네트워크 케이블 규격",
+                "파일 확장자 규칙",
+            ],
+            "answer": "A",
+        },
+        {
+            "question": f"{req.topic}를 적용할 때 가장 중요한 목표로 적절한 것은?",
+            "options": [
+                "자원 사용의 일관성과 안정성 확보",
+                "무조건 코드 줄 수 늘리기",
+                "오류를 숨겨서 실행 유지하기",
+                "문서 없이 빠르게 배포하기",
+            ],
+            "answer": "A",
+        },
+        {
+            "question": f"{req.topic}의 부재로 인해 가장 가능성이 높은 문제는?",
+            "options": [
+                "성능 저하 또는 예측 불가능한 동작",
+                "해상도 자동 향상",
+                "저장공간 무한 확장",
+                "CPU 발열 완전 제거",
+            ],
+            "answer": "A",
+        },
+        {
+            "question": f"다음 중 {req.topic} 학습에 가장 효과적인 접근은?",
+            "options": [
+                "개념-원리-사례를 연결해 설명해보기",
+                "정의만 암기하고 예시는 생략",
+                "오답 분석 없이 반복 풀이",
+                "관련 용어를 무시하고 구현부터 진행",
+            ],
+            "answer": "A",
+        },
+        {
+            "question": f"{req.topic}를 실무에 적용할 때 먼저 확인해야 할 것은?",
+            "options": [
+                "요구사항과 제약 조건",
+                "폰트 스타일",
+                "파일명 길이",
+                "운영체제 배경화면",
+            ],
+            "answer": "A",
+        },
     ]
+
+    quiz = [templates[i % len(templates)] for i in range(req.num_questions)]
     return {"quiz": quiz}
 
 
