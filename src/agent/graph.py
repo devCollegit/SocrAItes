@@ -273,7 +273,7 @@ def supervisor(state: AgentState) -> AgentState:
     plan = state.get("plan", "")
     depth = state.get("socratic_depth", 1)
     
-    context = "\n".join([d[0] for d in docs]) if docs else "No specific documents found."
+    context = "\n".join([d["text"] for d in docs]) if docs else "No specific documents found."
     
     system_prompt = f"""You are SocrAItes, a world-class Socratic tutor who helps students build deep understanding and strong meta-cognition.
 
@@ -412,7 +412,7 @@ def retrieval_node(state: AgentState) -> AgentState:
         inputs={"Search Query": last_query},
         decision={
             "Retrieved Count": len(results),
-            "Retrieved Chunks Snippets": [r[0][:80].replace("\n", " ") + "..." for r in results]
+            "Retrieved Chunks Snippets": [r["text"][:80].replace("\n", " ") + "..." for r in results]
         }
     )
     return state
