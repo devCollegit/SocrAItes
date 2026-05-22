@@ -15,6 +15,7 @@ test_chroma/
 .env
 data/pdfs/
 logs/
+scratch/
 
 # OS
 .DS_Store

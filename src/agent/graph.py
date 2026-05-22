@@ -175,6 +175,30 @@ def _is_quiz_answer(text: str) -> bool:
     return len(_ANSWER_PATTERN.findall(text)) >= 2
 
 
+def _detect_frustration(text: str) -> bool:
+    """Detect frustration in Korean text based on keywords."""
+    keywords = [
+        "모르겠", "모르겠음", "모르겠어", "모르겠다", "모르겠는데",
+        "어렵", "어려워", "어려움", "어렵다", "어려운데",
+        "힘들", "힘들어", "힘들다", "힘듦", "힘든데",
+        "포기", "못하겠", "못하겠어", "못하겠다", "못하겠음",
+        "답답", "헷갈려", "헷갈림", "이해 안", "이해가 안", "이해 안 됨",
+        "그냥 알려줘", "답 알려줘", "답을 알려", "어려운"
+    ]
+    # Remove whitespace and lower case to normalize
+    clean_text = text.replace(" ", "").lower()
+    return any(k.replace(" ", "").lower() in clean_text for k in keywords)
+
+
+def _is_last_message_quiz_prompt(history: List[Dict[str, Any]]) -> bool:
+    """Check if the last assistant message in history was a quiz prompt."""
+    for msg in reversed(history):
+        if msg.get("role") == "assistant":
+            content = msg.get("content", "")
+            return "퀴즈" in content and "답안은 예:" in content
+    return False
+
+
 def _grade_quiz(user_text: str, quiz_items: List[Dict[str, Any]]) -> str:
     """Compare user answers to correct answers and return a Korean grade report."""
     submissions = {int(q): v.upper() for q, v in _ANSWER_PATTERN.findall(user_text)}
@@ -292,6 +316,42 @@ def query_contextualizer(state: AgentState) -> AgentState:
     logger.info(f"--- [Query Contextualizer] Step ---")
     messages = state.get("messages", [])
     
+    # Calculate or accumulate frustration level
+    # Since the backend is stateless and runs a new graph execution on every turn,
+    # we scan the entire conversation history to count user frustration signals.
+    frustration_count = 0
+    for msg in messages:
+        if msg.get("role") == "user":
+            if _detect_frustration(msg.get("content", "")):
+                frustration_count += 1
+    state["frustration_level"] = frustration_count
+    logger.info(f"Calculated accumulated frustration level: {frustration_count}")
+    
+    # Check if there is a pending quiz and the user expressed frustration
+    pending_quiz = state.get("pending_quiz", [])
+    is_frustrated_in_quiz = False
+    # Check if a quiz is pending either from state or conversation history (last tutor message was quiz)
+    is_quiz_pending = len(pending_quiz) > 0 or _is_last_message_quiz_prompt(messages[:-1])
+    if is_quiz_pending and messages and messages[-1].get("role") == "user":
+        last_user_text = messages[-1].get("content", "")
+        if _detect_frustration(last_user_text):
+            is_frustrated_in_quiz = True
+
+    if is_frustrated_in_quiz:
+        state["contextualized_query"] = messages[-1]["content"]
+        logger.info(f"Frustrated during pending quiz. Bypassing LLM query rewriting. Query: '{state['contextualized_query']}'")
+        _log_trace(
+            step="QueryContextualizer",
+            purpose="Determine search-optimized query. Bypassed LLM query rewriting because user is frustrated during a pending quiz.",
+            inputs={
+                "Original User Message": state["contextualized_query"],
+                "Frustration Level": frustration_count,
+                "Pending Quiz Count": len(pending_quiz)
+            },
+            decision="Bypassed LLM due to frustration during quiz. Using original query."
+        )
+        return state
+
     if len(messages) <= 1:
         # Optimization: Bypassing LLM call on first turn
         state["contextualized_query"] = messages[-1]["content"] if messages else ""
@@ -299,7 +359,10 @@ def query_contextualizer(state: AgentState) -> AgentState:
         _log_trace(
             step="QueryContextualizer",
             purpose="Determine search-optimized query. Bypassed LLM query rewriting because this is the first turn.",
-            inputs={"Original User Message": state["contextualized_query"]},
+            inputs={
+                "Original User Message": state["contextualized_query"],
+                "Frustration Level": frustration_count
+            },
             decision="Bypassed LLM. Using original query as contextualized query."
         )
         return state
@@ -324,7 +387,8 @@ def query_contextualizer(state: AgentState) -> AgentState:
         purpose="Reformulate follow-up user query using conversation history into a standalone, search-optimized query.",
         inputs={
             "Original User Message": last_message,
-            "History Length (turns)": len(messages) - 1
+            "History Length (turns)": len(messages) - 1,
+            "Frustration Level": frustration_count
         },
         prompt_details={
             "Formatted History": history_text,
@@ -461,16 +525,10 @@ Rules:
 5. Respond naturally in Korean, adopting the persona of a warm Socratic coach.
 6. Context Progression: Analyze the conversation history. If the user asks to continue, resume, learn the next part, or summarize "again" (e.g., "다시 요약해줘", "다음 내용 알려줘"), do NOT repeat the previously explained concepts (like NLU/NLG). Instead, identify and summarize the NEXT sequential concepts from the available lecture context (such as traditional NLP components: morphological analysis, syntax parsing, semantic analysis, etc., or Korean linguistic characteristics) and ask a Socratic question on those new concepts."""
 
-    messages = [SystemMessage(content=system_prompt)]
-    for m in history:
-        if m["role"] == "user":
-            messages.append(HumanMessage(content=m["content"]))
-        elif m["role"] == "assistant":
-            messages.append(AIMessage(content=m["content"]))
-            
-    # --- Check if user is submitting quiz answers ---
     last_msg = history[-1]["content"] if history else ""
     pending_quiz = state.get("pending_quiz", [])
+    
+    # --- Check if user is submitting quiz answers ---
     if pending_quiz and _is_quiz_answer(last_msg):
         grade_report = _grade_quiz(last_msg, pending_quiz)
         state["draft_answer"] = grade_report
@@ -478,6 +536,28 @@ Rules:
         state["tool_results"] = []
         logger.info("Quiz graded for user submission.")
         return state
+
+    is_frustrated_in_quiz = False
+    is_quiz_pending = len(pending_quiz) > 0 or _is_last_message_quiz_prompt(history[:-1])
+    if is_quiz_pending and _detect_frustration(last_msg):
+        is_frustrated_in_quiz = True
+        logger.info("User is frustrated during a pending quiz. Adding strong prompt guards to prevent generate_quiz.")
+
+    messages = [SystemMessage(content=system_prompt)]
+    for m in history:
+        if m["role"] == "user":
+            messages.append(HumanMessage(content=m["content"]))
+        elif m["role"] == "assistant":
+            messages.append(AIMessage(content=m["content"]))
+            
+    if is_frustrated_in_quiz:
+        messages.append(SystemMessage(content=(
+            "IMPORTANT: The student is currently taking a quiz (pending_quiz exists) and expressed frustration or said they don't know the answer. "
+            "DO NOT call generate_quiz under any circumstances. "
+            "Instead, do the following:\n"
+            "1. Offer direct, encouraging support and a helpful hint for the quiz questions.\n"
+            "2. Inform them clearly that they can type '그냥 답 알려줘' if they want to give up and reveal the correct answers immediately."
+        )))
 
     response = llm.bind_tools(LANGCHAIN_TOOLS).invoke(messages)
     draft = _get_content(response)

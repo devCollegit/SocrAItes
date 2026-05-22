@@ -99,7 +99,7 @@ async def chat(request: ChatRequest):
                         # Serialize safely
                         serializable_output = {}
                         for k, v in node_output.items():
-                            if k in ["contextualized_query", "next_step", "plan", "draft_answer", "evaluation", "retrieved_docs", "tool_results"]:
+                            if k in ["contextualized_query", "next_step", "plan", "draft_answer", "evaluation", "retrieved_docs", "tool_results", "frustration_level"]:
                                 serializable_output[k] = v
                         
                         data = {
@@ -116,7 +116,8 @@ async def chat(request: ChatRequest):
                     "answer": current_state.get("draft_answer", "I'm sorry, I couldn't formulate a response."),
                     "retrieved_docs": current_state.get("retrieved_docs", []),
                     "plan": current_state.get("plan"),
-                    "tool_results": current_state.get("tool_results", [])
+                    "tool_results": current_state.get("tool_results", []),
+                    "frustration_level": current_state.get("frustration_level", 0)
                 }
                 yield f"data: {json.dumps(final_data, ensure_ascii=False)}\n\n"
             except Exception as e:

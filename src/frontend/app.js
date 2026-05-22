@@ -14,6 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const themeToggle = document.getElementById('theme-toggle');
     const statTurns = document.getElementById('stat-turns');
     const statDocs = document.getElementById('stat-docs');
+    const statFrustration = document.getElementById('stat-frustration');
     const quickChips = document.querySelectorAll('.chip');
     const attachBtn = document.getElementById('attach-btn');
     const pdfUpload = document.getElementById('pdf-upload');
@@ -26,6 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let isThinking = false;
     let turnCount = 0;
     let docCount = 0;
+    let frustrationLevel = 0;
 
     // Markdown Configuration
     marked.setOptions({
@@ -119,6 +121,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     const data = JSON.parse(jsonStr);
                     if (data.type === 'node_end') {
                         updateProgressStep(loadingId, data.node, data.output);
+                        if (data.node === 'query_contextualizer' && data.output.frustration_level !== undefined) {
+                            updateFrustrationUI(data.output.frustration_level);
+                        }
                     } else if (data.type === 'final_result') {
                         finalResult = data;
                     } else if (data.type === 'error') {
@@ -154,6 +159,10 @@ document.addEventListener('DOMContentLoaded', () => {
             messages.push({ role: 'assistant', content: data.answer });
             turnCount++;
             statTurns.innerText = turnCount;
+
+            if (data.frustration_level !== undefined) {
+                updateFrustrationUI(data.frustration_level);
+            }
 
             // Remove Loading & Add AI Response (with retrieved docs inline)
             removeLoadingIndicator(loadingId);
@@ -342,6 +351,23 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    function updateFrustrationUI(level) {
+        frustrationLevel = level;
+        let displayVal = frustrationLevel;
+        let levelClass = 'level-safe';
+        if (frustrationLevel >= 3) {
+            displayVal = `${frustrationLevel} 😰`;
+            levelClass = 'level-danger';
+        } else if (frustrationLevel >= 1) {
+            displayVal = `${frustrationLevel} ⚡`;
+            levelClass = 'level-warning';
+        }
+        if (statFrustration) {
+            statFrustration.innerText = displayVal;
+            statFrustration.className = `stat-value ${levelClass}`;
+        }
+    }
+
     // Event Listeners
     sendBtn.addEventListener('click', sendMessage);
     userInput.addEventListener('keydown', (e) => {
@@ -406,6 +432,7 @@ document.addEventListener('DOMContentLoaded', () => {
             docCount = 0;
             statTurns.innerText = '0';
             statDocs.innerText = '0';
+            updateFrustrationUI(0);
             currentPlan.innerHTML = '<div class="plan-empty"><p>질문하면 AI가<br>학습 계획을 세웁니다</p></div>';
         }
     });
