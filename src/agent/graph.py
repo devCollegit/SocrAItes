@@ -1,5 +1,7 @@
 import os
 import logging
+import json
+import re
 from datetime import datetime
 from typing import List, Dict, Any, Literal
 
@@ -11,6 +13,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langgraph.graph import StateGraph, END
 
 from .state import AgentState, DEFAULT_STATE
+from src.tools.learning_tools import TOOL_MAP, LANGCHAIN_TOOLS
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -94,6 +97,154 @@ def _get_content(response) -> str:
     if hasattr(response, "content"):
         return response.content
     return str(response)
+
+
+def _extract_tool_calls(response: Any) -> List[Dict[str, Any]]:
+    """Extract tool calls from LangChain response.
+    
+    Handles both:
+    1. LangChain ToolCall format: {"id": "...", "name": "...", "args": {...}}
+    2. OpenAI API format: {"type": "function", "function": {"name": "...", "arguments": "..."}}
+    """
+    tool_calls = getattr(response, "tool_calls", None)
+    if tool_calls:
+        return tool_calls
+    
+    # Fallback to additional_kwargs (less common in recent LangChain)
+    additional_kwargs = getattr(response, "additional_kwargs", {}) or {}
+    return additional_kwargs.get("tool_calls", [])
+
+
+def _run_tool_calls(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Execute tool calls and return results.
+    
+    Handles LangChain ToolCall format:
+    - tc.get("name") = tool name
+    - tc.get("args") = arguments dict (already parsed by LangChain)
+    """
+    results: List[Dict[str, Any]] = []
+    for tc in tool_calls:
+        # LangChain ToolCall format
+        tool_name = tc.get("name")
+        args = tc.get("args", {})
+        
+        # Fallback: OpenAI API format (unlikely but handles edge cases)
+        if not tool_name:
+            fn_info = tc.get("function", {})
+            tool_name = fn_info.get("name")
+            raw_args = fn_info.get("arguments", "{}")
+            try:
+                args = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})
+            except json.JSONDecodeError:
+                args = {}
+
+        if not tool_name:
+            results.append({
+                "tool": None,
+                "ok": False,
+                "error": f"Tool name not found in call",
+            })
+            continue
+
+        tool_fn = TOOL_MAP.get(tool_name)
+        if not tool_fn:
+            results.append({
+                "tool": tool_name,
+                "ok": False,
+                "error": f"Unknown tool: {tool_name}",
+            })
+            continue
+
+        try:
+            logger.info(f"Executing tool: {tool_name} with args: {args}")
+            output = tool_fn(args)
+            results.append({"tool": tool_name, "ok": True, "output": output})
+        except Exception as e:
+            logger.exception("Tool execution failed: %s", tool_name)
+            results.append({"tool": tool_name, "ok": False, "error": str(e)})
+
+    return results
+
+
+# Regex to detect answer submission like "1:A, 2:B, 3:C, 4:D, 5:A"
+_ANSWER_PATTERN = re.compile(r"(\d+)\s*[:：]\s*([A-Da-d])", re.UNICODE)
+
+
+def _is_quiz_answer(text: str) -> bool:
+    """Return True when the message looks like an answer submission."""
+    return len(_ANSWER_PATTERN.findall(text)) >= 2
+
+
+def _grade_quiz(user_text: str, quiz_items: List[Dict[str, Any]]) -> str:
+    """Compare user answers to correct answers and return a Korean grade report."""
+    submissions = {int(q): v.upper() for q, v in _ANSWER_PATTERN.findall(user_text)}
+    total = len(quiz_items)
+    correct = 0
+    lines = ["## 채점 결과", ""]
+
+    for idx, item in enumerate(quiz_items, start=1):
+        correct_ans = item.get("answer", "").upper()
+        user_ans = submissions.get(idx, "?")
+        options = item.get("options", [])
+        correct_text = options[ord(correct_ans) - ord("A")] if correct_ans and options else correct_ans
+
+        if user_ans == correct_ans:
+            correct += 1
+            mark = "✅"
+        else:
+            mark = "❌"
+
+        lines.append(f"{mark} {idx}번: 제출={user_ans} / 정답={correct_ans}")
+        if user_ans != correct_ans:
+            lines.append(f"   → 정답: {correct_ans}. {correct_text}")
+
+    score_pct = int(correct / total * 100) if total else 0
+    lines.append("")
+    lines.append(f"**{total}문항 중 {correct}문항 정답 ({score_pct}점)**")
+
+    if score_pct == 100:
+        lines.append("\ 완벽해요! 다음 개념으로 넘어가볼까요?")
+    elif score_pct >= 60:
+        lines.append("잘 했어요! 틀린 문항을 다시 한번 살펴보세요.")
+    else:
+        lines.append("조금 더 복습이 필요해요. 틀린 개념을 약점으로 저장해드릴까요?")
+
+    return "\n".join(lines)
+
+
+def _format_quiz_response(tool_results: List[Dict[str, Any]]) -> tuple[str | None, List[Dict[str, Any]]]:
+    """Create a learner-facing quiz message and return pending quiz items for grading.
+
+    Returns (message_str | None, quiz_items).
+    """
+    for result in tool_results:
+        if result.get("tool") != "generate_quiz" or not result.get("ok"):
+            continue
+        output = result.get("output") or {}
+        quiz_items = output.get("quiz") if isinstance(output, dict) else None
+        if not isinstance(quiz_items, list) or not quiz_items:
+            continue
+
+        source = output.get("source", "template")
+        header = "퀴즈 %d문항을 준비했어요 (출처: %s). 한 번에 풀어보세요." % (
+            len(quiz_items),
+            "강의 자료 기반" if source == "llm_rag" else "기본 템플릿",
+        )
+        lines = [header, ""]
+        for idx, item in enumerate(quiz_items, start=1):
+            question = item.get("question", "질문")
+            options = item.get("options", [])
+            lines.append(f"{idx}. {question}")
+            if isinstance(options, list) and len(options) >= 4:
+                lines.append(f"A. {options[0]}")
+                lines.append(f"B. {options[1]}")
+                lines.append(f"C. {options[2]}")
+                lines.append(f"D. {options[3]}")
+            lines.append("")
+
+        lines.append("답안은 예: 1:A, 2:B, 3:A, 4:C, 5:D 형태로 보내주세요.")
+        return "\n".join(lines), quiz_items
+    return None, []
 
 # ---------------------------------------------------------------------------
 # LLM Configuration
@@ -281,6 +432,13 @@ Your goal is to guide the student to think critically about operating systems an
 1. Provide a very brief, high-level explanation, hint, or conceptual summary (1-2 sentences max) based on the retrieved lecture materials to anchor their thoughts. Do NOT give a complete, fully detailed direct answer.
 2. Follow up immediately with a thought-provoking, meta-cognitive Socratic question.
 
+Tool Usage Policy (very important):
+- If the learner asks for quiz/problem practice, call tool `generate_quiz`.
+- If the learner asks to plan/register review schedule, call tool `schedule_review`.
+- If the learner asks to save a weak concept/mistake, call tool `save_weakness`.
+- If the learner explicitly asks for direct answer mode (e.g., "그냥 답 알려줘"), call tool `escape_to_answer`.
+- When tool usage is appropriate, call the tool first before final response.
+
 What is a Meta-cognitive Question?
 It is a question that encourages students to monitor and analyze their own thinking process. Examples:
 - "왜 그러한 방식이어야만 할까요? 다른 대안이 있다면 어떤 문제가 생길까요?" (Reasoning/Design choices)
@@ -309,8 +467,47 @@ Rules:
         elif m["role"] == "assistant":
             messages.append(AIMessage(content=m["content"]))
             
-    response = llm.invoke(messages)
-    state["draft_answer"] = _get_content(response)
+    # --- Check if user is submitting quiz answers ---
+    last_msg = history[-1]["content"] if history else ""
+    pending_quiz = state.get("pending_quiz", [])
+    if pending_quiz and _is_quiz_answer(last_msg):
+        grade_report = _grade_quiz(last_msg, pending_quiz)
+        state["draft_answer"] = grade_report
+        state["pending_quiz"] = []  # clear after grading
+        state["tool_results"] = []
+        logger.info("Quiz graded for user submission.")
+        return state
+
+    response = llm.bind_tools(LANGCHAIN_TOOLS).invoke(messages)
+    draft = _get_content(response)
+    tool_calls = _extract_tool_calls(response)
+    tool_results = _run_tool_calls(tool_calls) if tool_calls else []
+
+    if tool_results:
+        quiz_message, quiz_items = _format_quiz_response(tool_results)
+        if quiz_message:
+            state["draft_answer"] = quiz_message
+            state["tool_results"] = tool_results
+            state["pending_quiz"] = quiz_items
+            return state
+
+        summary_prompt = f"""You are SocrAItes. A tool call was executed during tutoring.
+Use tool results below and produce a concise Korean response for the learner.
+
+Tool Results JSON:
+{json.dumps(tool_results, ensure_ascii=False)}
+
+Rules:
+1. If escape_to_answer succeeded, provide a direct helpful answer in Korean.
+2. Otherwise, mention tool outcome clearly, then ask one short Socratic follow-up question.
+3. Keep it concise.
+"""
+        final_response = llm.invoke([SystemMessage(content=summary_prompt), HumanMessage(content="최종 응답을 작성해줘.")])
+        state["draft_answer"] = _get_content(final_response)
+    else:
+        state["draft_answer"] = draft
+
+    state["tool_results"] = tool_results
     
     logger.info(f"Draft Answer Generated (length: {len(state['draft_answer'])})")
     _log_trace(
@@ -326,7 +523,11 @@ Rules:
             "Conversation History Stream": "\n".join([f"  {m['role'].upper()}: {m['content']}" for m in history])
         },
         response=state["draft_answer"],
-        decision="Socratic Draft Response generated and saved to state."
+        decision={
+            "Tool Calls": len(tool_calls),
+            "Tool Results": tool_results,
+            "Result": "Socratic Draft Response generated and saved to state."
+        }
     )
     return state
 

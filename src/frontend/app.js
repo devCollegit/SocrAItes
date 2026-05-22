@@ -112,32 +112,38 @@ document.addEventListener('DOMContentLoaded', () => {
             let buffer = '';
             let finalResult = null;
 
+            const processLine = (line) => {
+                if (!line.startsWith('data: ')) return;
+                const jsonStr = line.slice(6).trim();
+                if (!jsonStr) return;
+                try {
+                    const data = JSON.parse(jsonStr);
+                    if (data.type === 'node_end') {
+                        updateProgressStep(loadingId, data.node, data.output);
+                    } else if (data.type === 'final_result') {
+                        finalResult = data;
+                    } else if (data.type === 'error') {
+                        throw new Error(data.detail);
+                    }
+                } catch (e) {
+                    console.error('Error parsing stream chunk:', e);
+                }
+            };
+
             while (true) {
                 const { done, value } = await reader.read();
-                if (done) break;
+
+                if (done) {
+                    // flush remaining buffer content before exiting
+                    buffer += decoder.decode();
+                    buffer.split('\n').forEach(line => processLine(line.trim()));
+                    break;
+                }
 
                 buffer += decoder.decode(value, { stream: true });
                 const lines = buffer.split('\n');
                 buffer = lines.pop();
-
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const jsonStr = line.slice(6).trim();
-                        if (!jsonStr) continue;
-                        try {
-                            const data = JSON.parse(jsonStr);
-                            if (data.type === 'node_end') {
-                                updateProgressStep(loadingId, data.node, data.output);
-                            } else if (data.type === 'final_result') {
-                                finalResult = data;
-                            } else if (data.type === 'error') {
-                                throw new Error(data.detail);
-                            }
-                        } catch (e) {
-                            console.error('Error parsing stream chunk:', e);
-                        }
-                    }
-                }
+                lines.forEach(line => processLine(line));
             }
 
             if (!finalResult) throw new Error('No final result returned from stream');
