@@ -34,6 +34,7 @@ class AgentState(TypedDict, total=False):
     session_id: str
     contextualized_query: str
     tool_results: List[Dict[str, Any]]
+    pending_quiz: List[Dict[str, Any]]  # Quiz items awaiting user answers
 
 # Default initial state
 DEFAULT_STATE: AgentState = {
@@ -48,4 +49,5 @@ DEFAULT_STATE: AgentState = {
     "session_id": "",
     "contextualized_query": "",
     "tool_results": [],
+    "pending_quiz": [],
 }

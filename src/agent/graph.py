@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+import re
 from datetime import datetime
 from typing import List, Dict, Any, Literal
 
@@ -165,10 +166,56 @@ def _run_tool_calls(tool_calls: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return results
 
 
-def _format_quiz_response(tool_results: List[Dict[str, Any]]) -> str | None:
-    """Create a deterministic learner-facing quiz message.
+# Regex to detect answer submission like "1:A, 2:B, 3:C, 4:D, 5:A"
+_ANSWER_PATTERN = re.compile(r"(\d+)\s*[:：]\s*([A-Da-d])", re.UNICODE)
 
-    Returns None when no successful quiz result is present.
+
+def _is_quiz_answer(text: str) -> bool:
+    """Return True when the message looks like an answer submission."""
+    return len(_ANSWER_PATTERN.findall(text)) >= 2
+
+
+def _grade_quiz(user_text: str, quiz_items: List[Dict[str, Any]]) -> str:
+    """Compare user answers to correct answers and return a Korean grade report."""
+    submissions = {int(q): v.upper() for q, v in _ANSWER_PATTERN.findall(user_text)}
+    total = len(quiz_items)
+    correct = 0
+    lines = ["## 채점 결과", ""]
+
+    for idx, item in enumerate(quiz_items, start=1):
+        correct_ans = item.get("answer", "").upper()
+        user_ans = submissions.get(idx, "?")
+        options = item.get("options", [])
+        correct_text = options[ord(correct_ans) - ord("A")] if correct_ans and options else correct_ans
+
+        if user_ans == correct_ans:
+            correct += 1
+            mark = "✅"
+        else:
+            mark = "❌"
+
+        lines.append(f"{mark} {idx}번: 제출={user_ans} / 정답={correct_ans}")
+        if user_ans != correct_ans:
+            lines.append(f"   → 정답: {correct_ans}. {correct_text}")
+
+    score_pct = int(correct / total * 100) if total else 0
+    lines.append("")
+    lines.append(f"**{total}문항 중 {correct}문항 정답 ({score_pct}점)**")
+
+    if score_pct == 100:
+        lines.append("\ 완벽해요! 다음 개념으로 넘어가볼까요?")
+    elif score_pct >= 60:
+        lines.append("잘 했어요! 틀린 문항을 다시 한번 살펴보세요.")
+    else:
+        lines.append("조금 더 복습이 필요해요. 틀린 개념을 약점으로 저장해드릴까요?")
+
+    return "\n".join(lines)
+
+
+def _format_quiz_response(tool_results: List[Dict[str, Any]]) -> tuple[str | None, List[Dict[str, Any]]]:
+    """Create a learner-facing quiz message and return pending quiz items for grading.
+
+    Returns (message_str | None, quiz_items).
     """
     for result in tool_results:
         if result.get("tool") != "generate_quiz" or not result.get("ok"):
@@ -178,7 +225,12 @@ def _format_quiz_response(tool_results: List[Dict[str, Any]]) -> str | None:
         if not isinstance(quiz_items, list) or not quiz_items:
             continue
 
-        lines = ["퀴즈 5문항을 준비했어요. 한 번에 풀어보세요.", ""]
+        source = output.get("source", "template")
+        header = "퀴즈 %d문항을 준비했어요 (출처: %s). 한 번에 풀어보세요." % (
+            len(quiz_items),
+            "강의 자료 기반" if source == "llm_rag" else "기본 템플릿",
+        )
+        lines = [header, ""]
         for idx, item in enumerate(quiz_items, start=1):
             question = item.get("question", "질문")
             options = item.get("options", [])
@@ -191,8 +243,8 @@ def _format_quiz_response(tool_results: List[Dict[str, Any]]) -> str | None:
             lines.append("")
 
         lines.append("답안은 예: 1:A, 2:B, 3:A, 4:C, 5:D 형태로 보내주세요.")
-        return "\n".join(lines)
-    return None
+        return "\n".join(lines), quiz_items
+    return None, []
 
 # ---------------------------------------------------------------------------
 # LLM Configuration
@@ -415,16 +467,28 @@ Rules:
         elif m["role"] == "assistant":
             messages.append(AIMessage(content=m["content"]))
             
+    # --- Check if user is submitting quiz answers ---
+    last_msg = history[-1]["content"] if history else ""
+    pending_quiz = state.get("pending_quiz", [])
+    if pending_quiz and _is_quiz_answer(last_msg):
+        grade_report = _grade_quiz(last_msg, pending_quiz)
+        state["draft_answer"] = grade_report
+        state["pending_quiz"] = []  # clear after grading
+        state["tool_results"] = []
+        logger.info("Quiz graded for user submission.")
+        return state
+
     response = llm.bind_tools(LANGCHAIN_TOOLS).invoke(messages)
     draft = _get_content(response)
     tool_calls = _extract_tool_calls(response)
     tool_results = _run_tool_calls(tool_calls) if tool_calls else []
 
     if tool_results:
-        quiz_message = _format_quiz_response(tool_results)
+        quiz_message, quiz_items = _format_quiz_response(tool_results)
         if quiz_message:
             state["draft_answer"] = quiz_message
             state["tool_results"] = tool_results
+            state["pending_quiz"] = quiz_items
             return state
 
         summary_prompt = f"""You are SocrAItes. A tool call was executed during tutoring.

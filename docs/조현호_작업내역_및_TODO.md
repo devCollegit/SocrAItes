@@ -72,25 +72,37 @@ if (done) {
 
 ---
 
-### 2. 퀴즈 개선 (선택사항 / 시간 여유 시)
+### 2. 퀴즈 개선 (선택사항 / 시간 여유 시) ✅ 완료
 
-현재 `generate_quiz`는 **미리 작성된 템플릿** 문제를 반환함.  
-실제 유용성을 높이려면 LLM이 학습 내용 기반으로 동적 생성하도록 변경 필요.
+**변경 파일:** `src/tools/learning_tools.py`, `src/agent/graph.py`, `src/agent/state.py`
 
-**현재 구조:**
-```python
-# src/tools/learning_tools.py
-QUIZ_TEMPLATES = [...]  # 고정 문제 리스트
-def generate_quiz(topic: str) -> dict:
-    return {"questions": QUIZ_TEMPLATES[:5]}
+#### 2-1. LLM + RAG 기반 동적 퀴즈 생성
+
+| 구분 | 이전 | 이후 |
+|------|------|------|
+| 문제 소스 | 고정 템플릿 5개 반복 | ES에서 topic 관련 문서 검색 → GPT-4o-mini로 동적 생성 |
+| 다양성 | 항상 동일한 문제 | 강의 자료 기반, 매번 다른 문제 생성 가능 |
+| 폴백 | 없음 | ES/LLM 오류 시 기존 템플릿으로 자동 폴백 |
+
+**동작 흐름:**
+```
+generate_quiz(topic)
+  → _retrieve_context_for_quiz()  ← ES hybrid search
+  → LLM(gpt-4o-mini) + 강의자료 context → JSON 파싱
+  → 실패 시 → _get_fallback_templates() (기존 템플릿)
 ```
 
-**개선 방향:**
-- LLM에게 topic을 넘겨 직접 문제 생성 요청
-- RAG로 관련 문서 검색 후 그 내용 기반 출제
-- 중복 출제 방지: session-level 출제 기록 관리
+#### 2-2. 퀴즈 답변 자동 채점
 
-**우선순위:** 낮음 (기능 자체는 동작 중, 고도화 단계에서 진행)
+사용자가 `1:A, 2:B, 3:C, 4:D, 5:A` 형태로 답 제출 시 자동 채점 후 피드백 반환
+
+- `state.pending_quiz`: 출제된 퀴즈 항목 저장 (정답 포함)
+- `_is_quiz_answer()`: 답안 제출 패턴 감지
+- `_grade_quiz()`: 정답 비교 → ✅/❌ 피드백 + 점수 반환
+- 60점 미만 시 "약점으로 저장할까요?" 제안
+
+**팀원 연동 포인트:**
+- 세션 히스토리(김우림) 완료되면 `pending_quiz`를 session-level로 이전하면 됨
 
 ---
 

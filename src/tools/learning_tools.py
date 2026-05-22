@@ -1,15 +1,16 @@
 # src/tools/learning_tools.py
 """Function calling tools for SocrAItes.
 
-The actual implementations will be wired into LangChain function calling.
-For now we provide simple stubs that log the call and return a dummy
-result. Replace with real logic (quiz generation, scheduling, etc.) when
-the rest of the system is ready.
+Tools are wired into LangChain function calling via LANGCHAIN_TOOLS and
+executed by the supervisor node via TOOL_MAP.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
+import re
 from datetime import datetime
 from typing import Dict, Any, List
 
@@ -71,18 +72,75 @@ class EscapeResponse(BaseModel):
 # Stub implementations – they simply log and return a placeholder value.
 # ---------------------------------------------------------------------------
 
-def generate_quiz(request: Dict[str, Any]) -> Dict[str, Any]:
-    """Generate a quiz for a given topic.
+def _retrieve_context_for_quiz(topic: str, k: int = 6) -> str:
+    """Search ES for relevant passages to use as quiz source material.
 
-    In the MVP we return a static list of multiple‑choice questions.
+    Falls back to an empty string if ES is unavailable.
     """
-    req = QuizRequest(**request)
-    logger.info("generate_quiz called with %s", req)
-    # MVP deterministic quiz templates. Keep questions distinct so that
-    # the learner can solve multiple items in one generation.
+    try:
+        from src.rag.vectorstore import query as vs_query
+        docs = vs_query(topic, k=k)
+        if docs:
+            return "\n\n".join(d.get("text", "") for d in docs if d.get("text"))
+    except Exception as e:
+        logger.warning("RAG retrieval for quiz failed: %s", e)
+    return ""
+
+
+_QUIZ_GENERATION_PROMPT = """\
+You are an expert exam question writer for a university-level course.
+
+Your task: generate exactly {n} multiple-choice questions about "{topic}".
+
+Source material (use this as the primary basis; additional knowledge is fine):
+---
+{context}
+---
+
+Requirements:
+1. Each question MUST have exactly 4 options labeled A, B, C, D.
+2. Exactly ONE option must be the correct answer; the other three must be plausible distractors.
+3. Vary question difficulty (concept recall, applied reasoning, edge cases).
+4. All text must be in Korean.
+5. Do NOT add any explanation text outside the JSON block.
+
+Return ONLY a valid JSON array with this schema (no markdown fences):
+[
+  {{
+    "question": "질문 내용",
+    "options": ["A 보기", "B 보기", "C 보기", "D 보기"],
+    "answer": "A"
+  }},
+  ...
+]
+"""
+
+
+def _parse_quiz_json(raw: str) -> list | None:
+    """Extract and parse a JSON array from raw LLM output."""
+    # Strip markdown fences if present
+    raw = re.sub(r"```(?:json)?", "", raw).strip()
+    # Find the first [...] block
+    match = re.search(r"\[.*\]", raw, re.DOTALL)
+    if not match:
+        return None
+    try:
+        items = json.loads(match.group(0))
+        if isinstance(items, list) and items:
+            return items
+    except json.JSONDecodeError:
+        pass
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Fallback static templates (used when LLM/ES unavailable)
+# ---------------------------------------------------------------------------
+
+def _get_fallback_templates(topic: str, n: int) -> list:
     templates = [
         {
-            "question": f"{req.topic}의 가장 적절한 정의는 무엇인가요?",
+            "question": f"{topic}의 가장 적절한 정의는 무엇인가요?",
             "options": [
                 "시스템 자원을 효율적으로 관리하는 핵심 개념",
                 "단순한 UI 디자인 원칙",
@@ -92,7 +150,7 @@ def generate_quiz(request: Dict[str, Any]) -> Dict[str, Any]:
             "answer": "A",
         },
         {
-            "question": f"{req.topic}를 적용할 때 가장 중요한 목표로 적절한 것은?",
+            "question": f"{topic}를 적용할 때 가장 중요한 목표로 적절한 것은?",
             "options": [
                 "자원 사용의 일관성과 안정성 확보",
                 "무조건 코드 줄 수 늘리기",
@@ -102,7 +160,7 @@ def generate_quiz(request: Dict[str, Any]) -> Dict[str, Any]:
             "answer": "A",
         },
         {
-            "question": f"{req.topic}의 부재로 인해 가장 가능성이 높은 문제는?",
+            "question": f"{topic}의 부재로 인해 가장 가능성이 높은 문제는?",
             "options": [
                 "성능 저하 또는 예측 불가능한 동작",
                 "해상도 자동 향상",
@@ -112,7 +170,7 @@ def generate_quiz(request: Dict[str, Any]) -> Dict[str, Any]:
             "answer": "A",
         },
         {
-            "question": f"다음 중 {req.topic} 학습에 가장 효과적인 접근은?",
+            "question": f"다음 중 {topic} 학습에 가장 효과적인 접근은?",
             "options": [
                 "개념-원리-사례를 연결해 설명해보기",
                 "정의만 암기하고 예시는 생략",
@@ -122,7 +180,7 @@ def generate_quiz(request: Dict[str, Any]) -> Dict[str, Any]:
             "answer": "A",
         },
         {
-            "question": f"{req.topic}를 실무에 적용할 때 먼저 확인해야 할 것은?",
+            "question": f"{topic}를 실무에 적용할 때 먼저 확인해야 할 것은?",
             "options": [
                 "요구사항과 제약 조건",
                 "폰트 스타일",
@@ -132,9 +190,54 @@ def generate_quiz(request: Dict[str, Any]) -> Dict[str, Any]:
             "answer": "A",
         },
     ]
+    return [templates[i % len(templates)] for i in range(n)]
 
-    quiz = [templates[i % len(templates)] for i in range(req.num_questions)]
-    return {"quiz": quiz}
+
+def generate_quiz(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Generate a quiz for a given topic using RAG + LLM.
+
+    1. Retrieves relevant passages from Elasticsearch.
+    2. Asks the LLM to generate questions grounded in that context.
+    3. Falls back to static templates if LLM/ES is unavailable.
+    """
+    req = QuizRequest(**request)
+    logger.info("generate_quiz called: topic=%s, n=%d", req.topic, req.num_questions)
+
+    context = _retrieve_context_for_quiz(req.topic)
+    quiz_items = None
+
+    if os.getenv("OPENAI_API_KEY") and context:
+        try:
+            from langchain_openai import ChatOpenAI
+            from langchain_core.messages import HumanMessage
+            gen_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
+            prompt = _QUIZ_GENERATION_PROMPT.format(
+                n=req.num_questions,
+                topic=req.topic,
+                context=context[:4000],  # stay within token limits
+            )
+            response = gen_llm.invoke([HumanMessage(content=prompt)])
+            raw = response.content if hasattr(response, "content") else str(response)
+            quiz_items = _parse_quiz_json(raw)
+            if quiz_items:
+                logger.info("LLM quiz generation succeeded: %d questions", len(quiz_items))
+            else:
+                logger.warning("Failed to parse LLM quiz output; falling back to templates")
+        except Exception as e:
+            logger.warning("LLM quiz generation error: %s", e)
+
+    if not quiz_items:
+        logger.info("Using fallback quiz templates for topic: %s", req.topic)
+        quiz_items = _get_fallback_templates(req.topic, req.num_questions)
+
+    # Normalise: ensure exactly num_questions items
+    quiz_items = quiz_items[:req.num_questions]
+
+    return {
+        "quiz": quiz_items,
+        "topic": req.topic,
+        "source": "llm_rag" if context and quiz_items and os.getenv("OPENAI_API_KEY") else "template",
+    }
 
 
 def schedule_review(request: Dict[str, Any]) -> Dict[str, Any]:
