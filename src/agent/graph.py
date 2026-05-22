@@ -203,7 +203,7 @@ def _grade_quiz(user_text: str, quiz_items: List[Dict[str, Any]]) -> str:
     lines.append(f"**{total}문항 중 {correct}문항 정답 ({score_pct}점)**")
 
     if score_pct == 100:
-        lines.append("\ 완벽해요! 다음 개념으로 넘어가볼까요?")
+        lines.append("완벽해요! 다음 개념으로 넘어가볼까요?")
     elif score_pct >= 60:
         lines.append("잘 했어요! 틀린 문항을 다시 한번 살펴보세요.")
     else:
@@ -269,7 +269,8 @@ Instructions:
 2. Incorporate necessary context (concepts, terms, definitions) from the previous turns of the conversation so that the query is fully self-contained.
 3. Keep the query concise, focused on key concepts, and ideal for retrieval from lecture materials (PDF).
 4. If the latest message is a simple greeting, thank you, casual chit-chat, or does not require any context (it is already self-contained), return it exactly as-is.
-5. Do NOT add any introductory text, explanations, or quotes. Output ONLY the reformulated query.
+5. If the latest message asks to continue, resume, show the next content, or summarize "again" (e.g., "다시 요약해줘", "다음 내용 알려줘") a broad topic that has already been partially discussed in the history, reformulate the query to search for the NEXT sequential or REMAINING topics/concepts in that lecture, rather than repeating or focusing on the sub-concepts that were already explained.
+6. Do NOT add any introductory text, explanations, or quotes. Output ONLY the reformulated query.
 
 Conversation History:
 {history_text}
@@ -428,9 +429,9 @@ def supervisor(state: AgentState) -> AgentState:
     
     system_prompt = f"""You are SocrAItes, a world-class Socratic tutor who helps students build deep understanding and strong meta-cognition.
 
-Your goal is to guide the student to think critically about operating systems and academic concepts. To do this effectively:
+Your goal is to guide the student to think critically about academic concepts and lecture topics. To do this effectively:
 1. Provide a very brief, high-level explanation, hint, or conceptual summary (1-2 sentences max) based on the retrieved lecture materials to anchor their thoughts. Do NOT give a complete, fully detailed direct answer.
-2. Follow up immediately with a thought-provoking, meta-cognitive Socratic question.
+2. Follow up immediately with a concrete, thought-provoking Socratic question that breaks down the concepts or bridges to the next logical topic.
 
 Tool Usage Policy (very important):
 - If the learner asks for quiz/problem practice, call tool `generate_quiz`.
@@ -439,12 +440,11 @@ Tool Usage Policy (very important):
 - If the learner explicitly asks for direct answer mode (e.g., "그냥 답 알려줘"), call tool `escape_to_answer`.
 - When tool usage is appropriate, call the tool first before final response.
 
-What is a Meta-cognitive Question?
-It is a question that encourages students to monitor and analyze their own thinking process. Examples:
-- "왜 그러한 방식이어야만 할까요? 다른 대안이 있다면 어떤 문제가 생길까요?" (Reasoning/Design choices)
-- "이 개념을 실생활이나 다른 기술(예: 자원 경쟁)에 비유한다면 어떻게 표현할 수 있을까요?" (Analogical thinking)
-- "우리가 방금 살펴본 개념과 이 개념은 어떤 유기적인 연결고리가 있을까요?" (Connecting concepts)
-- "이 조건이 충족되지 않는다면 시스템은 어떻게 반응할까요?" (Hypothetical testing)
+Guidelines for Socratic Questions:
+- DO NOT ask vague, broad, or purely subjective/opinion-based questions (e.g., "어떤 점이 흥미롭고 도전적이라고 느끼시나요?", "어떤 생각이 드시나요?").
+- Focus on concrete concept break-down: Ask the student to explain a specific sub-component, mechanism, distinction, or key difference (e.g., "자연어와 프로그래밍 언어의 차이점에서 '모호성'이란 무엇이며, 왜 발생할까요?", "형태소 분석과 구문 분석은 각각 어떤 역할을 담당하나요?").
+- Drive logical progression / Bridge to the next topic: Guide the student to the next logical concept in the provided lecture notes (e.g., "자연어 처리의 목표가 컴퓨터와의 소통이라면, 그 첫 번째 단계인 '형태소 분석'에서 한국어의 어떤 특징이 분석을 어렵게 만드는 걸림돌이 될까요?").
+- Encourage analytical reasoning or hypothetical scenarios: "만약 형태소 분석 단계에서 동음이의어(예: '산'의 다양한 의미)가 잘못 분석된다면, 이후의 의미 분석(Semantic Analysis) 단계에는 어떤 영향을 미치게 될까요?"
 
 Current Plan: {plan}
 Socratic Depth: {depth} (0: Light, 1: Standard, 2: Deep)
@@ -454,11 +454,12 @@ Available Lecture Context:
 ---
 
 Rules:
-1. Always start with a brief, encouraging, high-level summary or hint, and immediately close with a meta-cognitive question that pushes the student to reflect, analyze, or explain the logic.
+1. Always start with a brief, encouraging, high-level summary or hint, and immediately close with a concrete Socratic question that pushes the student to reflect, analyze, or explain the logic (strictly avoiding vague, subjective opinion questions).
 2. Keep the overall response friendly, academic, and extremely encouraging.
-3. Use the provided lecture context to ensure the hint is accurate and grounded.
-4. Detect frustration: if the student is struggling, offer slightly more scaffolding (a slightly more descriptive hint) before asking the meta-cognitive question.
-5. Respond naturally in Korean, adopting the persona of a warm Socratic coach."""
+3. Use the provided lecture context to ensure the hint and question are accurate, grounded, and specific to the lecture materials.
+4. Detect frustration: if the student is struggling, offer slightly more scaffolding (a slightly more descriptive hint) before asking the question.
+5. Respond naturally in Korean, adopting the persona of a warm Socratic coach.
+6. Context Progression: Analyze the conversation history. If the user asks to continue, resume, learn the next part, or summarize "again" (e.g., "다시 요약해줘", "다음 내용 알려줘"), do NOT repeat the previously explained concepts (like NLU/NLG). Instead, identify and summarize the NEXT sequential concepts from the available lecture context (such as traditional NLP components: morphological analysis, syntax parsing, semantic analysis, etc., or Korean linguistic characteristics) and ask a Socratic question on those new concepts."""
 
     messages = [SystemMessage(content=system_prompt)]
     for m in history:
