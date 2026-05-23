@@ -102,7 +102,7 @@ Python 3.11 이상의 환경이 필요합니다.
 # 가상환경 생성 및 활성화
 python3.11 -m venv venv
 source venv/bin/activate  # macOS/Linux
-venv\Scripts\activate     # Windows
+.venv\Scripts\activate     # Windows
 
 # 의존성 설치
 pip install -r requirements.txt

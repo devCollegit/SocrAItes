@@ -190,6 +190,13 @@ def _detect_frustration(text: str) -> bool:
     return any(k.replace(" ", "").lower() in clean_text for k in keywords)
 
 
+def _is_summary_request(text: str) -> bool:
+    """Return True if the text contains keywords requesting a summary or organization."""
+    keywords = ["요약", "정리", "summary", "summarize", "summarise", "outline"]
+    clean_text = text.replace(" ", "").lower()
+    return any(k in clean_text for k in keywords)
+
+
 def _is_last_message_quiz_prompt(history: List[Dict[str, Any]]) -> bool:
     """Check if the last assistant message in history was a quiz prompt."""
     for msg in reversed(history):
@@ -490,12 +497,28 @@ def supervisor(state: AgentState) -> AgentState:
     depth = state.get("socratic_depth", 1)
     
     context = "\n".join([d["text"] for d in docs]) if docs else "No specific documents found."
+    last_msg = history[-1]["content"] if history else ""
+    last_query = state.get("contextualized_query", "")
     
+    # Detect if user is asking for a summary/organization
+    is_summary = _is_summary_request(last_msg) or (last_query and _is_summary_request(last_query))
+    
+    if is_summary:
+        goal_instruction = """Your goal is to provide a comprehensive, structured, and detailed summary of the retrieved lecture materials to satisfy the student's request, and then guide them to think critically. To do this effectively:
+1. Provide a thorough, structured, and detailed summary of the retrieved lecture materials/documents. The summary should be comprehensive and cover the key concepts, techniques, challenges, and details present in the context. Do NOT restrict the summary to 1-2 sentences. Make it detailed and well-structured.
+2. Follow up immediately at the end with a concrete, thought-provoking Socratic question that relates to the summarized concepts or bridges to the next logical topic to encourage further reflection."""
+        
+        rule_1_instruction = "1. Since the student requested a summary, always start with a comprehensive, detailed, and structured summary of the retrieved lecture materials/documents (do NOT make it brief or limit to 1-2 sentences), and close with a concrete Socratic question that pushes the student to reflect, analyze, or explain the logic (strictly avoiding vague, subjective opinion questions)."
+    else:
+        goal_instruction = """Your goal is to guide the student to think critically about academic concepts and lecture topics. To do this effectively:
+1. Provide a very brief, high-level explanation, hint, or conceptual summary (1-2 sentences max) based on the retrieved lecture materials to anchor their thoughts. Do NOT give a complete, fully detailed direct answer.
+2. Follow up immediately with a concrete, thought-provoking Socratic question that breaks down the concepts or bridges to the next logical topic."""
+        
+        rule_1_instruction = "1. Always start with a brief, encouraging, high-level summary or hint, and immediately close with a concrete Socratic question that pushes the student to reflect, analyze, or explain the logic (strictly avoiding vague, subjective opinion questions)."
+
     system_prompt = f"""You are SocrAItes, a world-class Socratic tutor who helps students build deep understanding and strong meta-cognition.
 
-Your goal is to guide the student to think critically about academic concepts and lecture topics. To do this effectively:
-1. Provide a very brief, high-level explanation, hint, or conceptual summary (1-2 sentences max) based on the retrieved lecture materials to anchor their thoughts. Do NOT give a complete, fully detailed direct answer.
-2. Follow up immediately with a concrete, thought-provoking Socratic question that breaks down the concepts or bridges to the next logical topic.
+{goal_instruction}
 
 Tool Usage Policy (very important):
 - If the learner asks for quiz/problem practice, call tool `generate_quiz`.
@@ -518,7 +541,7 @@ Available Lecture Context:
 ---
 
 Rules:
-1. Always start with a brief, encouraging, high-level summary or hint, and immediately close with a concrete Socratic question that pushes the student to reflect, analyze, or explain the logic (strictly avoiding vague, subjective opinion questions).
+{rule_1_instruction}
 2. Keep the overall response friendly, academic, and extremely encouraging.
 3. Use the provided lecture context to ensure the hint and question are accurate, grounded, and specific to the lecture materials.
 4. Detect frustration: if the student is struggling, offer slightly more scaffolding (a slightly more descriptive hint) before asking the question.
