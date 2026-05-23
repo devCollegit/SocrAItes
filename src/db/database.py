@@ -370,6 +370,14 @@ def save_report(title: str, body: str, user_id: str = "default") -> int:
     return row_id
 
 
+def delete_session(session_id: str) -> None:
+    """Delete a session and all its messages (CASCADE)."""
+    conn = get_connection()
+    conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+    conn.commit()
+    conn.close()
+
+
 def get_reports(user_id: str = "default", limit: int = 10) -> List[Dict[str, Any]]:
     """Return the most recent reports for a user."""
     conn = get_connection()
