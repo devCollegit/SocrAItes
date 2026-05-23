@@ -175,6 +175,37 @@ def _is_quiz_answer(text: str) -> bool:
     return len(_ANSWER_PATTERN.findall(text)) >= 2
 
 
+def _detect_frustration(text: str) -> bool:
+    """Detect frustration in Korean text based on keywords."""
+    keywords = [
+        "모르겠", "모르겠음", "모르겠어", "모르겠다", "모르겠는데",
+        "어렵", "어려워", "어려움", "어렵다", "어려운데",
+        "힘들", "힘들어", "힘들다", "힘듦", "힘든데",
+        "포기", "못하겠", "못하겠어", "못하겠다", "못하겠음",
+        "답답", "헷갈려", "헷갈림", "이해 안", "이해가 안", "이해 안 됨",
+        "그냥 알려줘", "답 알려줘", "답을 알려", "어려운"
+    ]
+    # Remove whitespace and lower case to normalize
+    clean_text = text.replace(" ", "").lower()
+    return any(k.replace(" ", "").lower() in clean_text for k in keywords)
+
+
+def _is_summary_request(text: str) -> bool:
+    """Return True if the text contains keywords requesting a summary or organization."""
+    keywords = ["요약", "정리", "summary", "summarize", "summarise", "outline"]
+    clean_text = text.replace(" ", "").lower()
+    return any(k in clean_text for k in keywords)
+
+
+def _is_last_message_quiz_prompt(history: List[Dict[str, Any]]) -> bool:
+    """Check if the last assistant message in history was a quiz prompt."""
+    for msg in reversed(history):
+        if msg.get("role") == "assistant":
+            content = msg.get("content", "")
+            return "퀴즈" in content and "답안은 예:" in content
+    return False
+
+
 def _grade_quiz(user_text: str, quiz_items: List[Dict[str, Any]]) -> str:
     """Compare user answers to correct answers and return a Korean grade report."""
     submissions = {int(q): v.upper() for q, v in _ANSWER_PATTERN.findall(user_text)}
@@ -203,7 +234,7 @@ def _grade_quiz(user_text: str, quiz_items: List[Dict[str, Any]]) -> str:
     lines.append(f"**{total}문항 중 {correct}문항 정답 ({score_pct}점)**")
 
     if score_pct == 100:
-        lines.append("\ 완벽해요! 다음 개념으로 넘어가볼까요?")
+        lines.append("완벽해요! 다음 개념으로 넘어가볼까요?")
     elif score_pct >= 60:
         lines.append("잘 했어요! 틀린 문항을 다시 한번 살펴보세요.")
     else:
@@ -269,7 +300,8 @@ Instructions:
 2. Incorporate necessary context (concepts, terms, definitions) from the previous turns of the conversation so that the query is fully self-contained.
 3. Keep the query concise, focused on key concepts, and ideal for retrieval from lecture materials (PDF).
 4. If the latest message is a simple greeting, thank you, casual chit-chat, or does not require any context (it is already self-contained), return it exactly as-is.
-5. Do NOT add any introductory text, explanations, or quotes. Output ONLY the reformulated query.
+5. If the latest message asks to continue, resume, show the next content, or summarize "again" (e.g., "다시 요약해줘", "다음 내용 알려줘") a broad topic that has already been partially discussed in the history, reformulate the query to search for the NEXT sequential or REMAINING topics/concepts in that lecture, rather than repeating or focusing on the sub-concepts that were already explained.
+6. Do NOT add any introductory text, explanations, or quotes. Output ONLY the reformulated query.
 
 Conversation History:
 {history_text}
@@ -291,6 +323,42 @@ def query_contextualizer(state: AgentState) -> AgentState:
     logger.info(f"--- [Query Contextualizer] Step ---")
     messages = state.get("messages", [])
     
+    # Calculate or accumulate frustration level
+    # Since the backend is stateless and runs a new graph execution on every turn,
+    # we scan the entire conversation history to count user frustration signals.
+    frustration_count = 0
+    for msg in messages:
+        if msg.get("role") == "user":
+            if _detect_frustration(msg.get("content", "")):
+                frustration_count += 1
+    state["frustration_level"] = frustration_count
+    logger.info(f"Calculated accumulated frustration level: {frustration_count}")
+    
+    # Check if there is a pending quiz and the user expressed frustration
+    pending_quiz = state.get("pending_quiz", [])
+    is_frustrated_in_quiz = False
+    # Check if a quiz is pending either from state or conversation history (last tutor message was quiz)
+    is_quiz_pending = len(pending_quiz) > 0 or _is_last_message_quiz_prompt(messages[:-1])
+    if is_quiz_pending and messages and messages[-1].get("role") == "user":
+        last_user_text = messages[-1].get("content", "")
+        if _detect_frustration(last_user_text):
+            is_frustrated_in_quiz = True
+
+    if is_frustrated_in_quiz:
+        state["contextualized_query"] = messages[-1]["content"]
+        logger.info(f"Frustrated during pending quiz. Bypassing LLM query rewriting. Query: '{state['contextualized_query']}'")
+        _log_trace(
+            step="QueryContextualizer",
+            purpose="Determine search-optimized query. Bypassed LLM query rewriting because user is frustrated during a pending quiz.",
+            inputs={
+                "Original User Message": state["contextualized_query"],
+                "Frustration Level": frustration_count,
+                "Pending Quiz Count": len(pending_quiz)
+            },
+            decision="Bypassed LLM due to frustration during quiz. Using original query."
+        )
+        return state
+
     if len(messages) <= 1:
         # Optimization: Bypassing LLM call on first turn
         state["contextualized_query"] = messages[-1]["content"] if messages else ""
@@ -298,7 +366,10 @@ def query_contextualizer(state: AgentState) -> AgentState:
         _log_trace(
             step="QueryContextualizer",
             purpose="Determine search-optimized query. Bypassed LLM query rewriting because this is the first turn.",
-            inputs={"Original User Message": state["contextualized_query"]},
+            inputs={
+                "Original User Message": state["contextualized_query"],
+                "Frustration Level": frustration_count
+            },
             decision="Bypassed LLM. Using original query as contextualized query."
         )
         return state
@@ -323,7 +394,8 @@ def query_contextualizer(state: AgentState) -> AgentState:
         purpose="Reformulate follow-up user query using conversation history into a standalone, search-optimized query.",
         inputs={
             "Original User Message": last_message,
-            "History Length (turns)": len(messages) - 1
+            "History Length (turns)": len(messages) - 1,
+            "Frustration Level": frustration_count
         },
         prompt_details={
             "Formatted History": history_text,
@@ -425,12 +497,28 @@ def supervisor(state: AgentState) -> AgentState:
     depth = state.get("socratic_depth", 1)
     
     context = "\n".join([d["text"] for d in docs]) if docs else "No specific documents found."
+    last_msg = history[-1]["content"] if history else ""
+    last_query = state.get("contextualized_query", "")
     
+    # Detect if user is asking for a summary/organization
+    is_summary = _is_summary_request(last_msg) or (last_query and _is_summary_request(last_query))
+    
+    if is_summary:
+        goal_instruction = """Your goal is to provide a comprehensive, structured, and detailed summary of the retrieved lecture materials to satisfy the student's request, and then guide them to think critically. To do this effectively:
+1. Provide a thorough, structured, and detailed summary of the retrieved lecture materials/documents. The summary should be comprehensive and cover the key concepts, techniques, challenges, and details present in the context. Do NOT restrict the summary to 1-2 sentences. Make it detailed and well-structured.
+2. Follow up immediately at the end with a concrete, thought-provoking Socratic question that relates to the summarized concepts or bridges to the next logical topic to encourage further reflection."""
+        
+        rule_1_instruction = "1. Since the student requested a summary, always start with a comprehensive, detailed, and structured summary of the retrieved lecture materials/documents (do NOT make it brief or limit to 1-2 sentences), and close with a concrete Socratic question that pushes the student to reflect, analyze, or explain the logic (strictly avoiding vague, subjective opinion questions)."
+    else:
+        goal_instruction = """Your goal is to guide the student to think critically about academic concepts and lecture topics. To do this effectively:
+1. Provide a very brief, high-level explanation, hint, or conceptual summary (1-2 sentences max) based on the retrieved lecture materials to anchor their thoughts. Do NOT give a complete, fully detailed direct answer.
+2. Follow up immediately with a concrete, thought-provoking Socratic question that breaks down the concepts or bridges to the next logical topic."""
+        
+        rule_1_instruction = "1. Always start with a brief, encouraging, high-level summary or hint, and immediately close with a concrete Socratic question that pushes the student to reflect, analyze, or explain the logic (strictly avoiding vague, subjective opinion questions)."
+
     system_prompt = f"""You are SocrAItes, a world-class Socratic tutor who helps students build deep understanding and strong meta-cognition.
 
-Your goal is to guide the student to think critically about operating systems and academic concepts. To do this effectively:
-1. Provide a very brief, high-level explanation, hint, or conceptual summary (1-2 sentences max) based on the retrieved lecture materials to anchor their thoughts. Do NOT give a complete, fully detailed direct answer.
-2. Follow up immediately with a thought-provoking, meta-cognitive Socratic question.
+{goal_instruction}
 
 Tool Usage Policy (very important):
 - If the learner asks for quiz/problem practice, call tool `generate_quiz`.
@@ -439,12 +527,11 @@ Tool Usage Policy (very important):
 - If the learner explicitly asks for direct answer mode (e.g., "그냥 답 알려줘"), call tool `escape_to_answer`.
 - When tool usage is appropriate, call the tool first before final response.
 
-What is a Meta-cognitive Question?
-It is a question that encourages students to monitor and analyze their own thinking process. Examples:
-- "왜 그러한 방식이어야만 할까요? 다른 대안이 있다면 어떤 문제가 생길까요?" (Reasoning/Design choices)
-- "이 개념을 실생활이나 다른 기술(예: 자원 경쟁)에 비유한다면 어떻게 표현할 수 있을까요?" (Analogical thinking)
-- "우리가 방금 살펴본 개념과 이 개념은 어떤 유기적인 연결고리가 있을까요?" (Connecting concepts)
-- "이 조건이 충족되지 않는다면 시스템은 어떻게 반응할까요?" (Hypothetical testing)
+Guidelines for Socratic Questions:
+- DO NOT ask vague, broad, or purely subjective/opinion-based questions (e.g., "어떤 점이 흥미롭고 도전적이라고 느끼시나요?", "어떤 생각이 드시나요?").
+- Focus on concrete concept break-down: Ask the student to explain a specific sub-component, mechanism, distinction, or key difference (e.g., "자연어와 프로그래밍 언어의 차이점에서 '모호성'이란 무엇이며, 왜 발생할까요?", "형태소 분석과 구문 분석은 각각 어떤 역할을 담당하나요?").
+- Drive logical progression / Bridge to the next topic: Guide the student to the next logical concept in the provided lecture notes (e.g., "자연어 처리의 목표가 컴퓨터와의 소통이라면, 그 첫 번째 단계인 '형태소 분석'에서 한국어의 어떤 특징이 분석을 어렵게 만드는 걸림돌이 될까요?").
+- Encourage analytical reasoning or hypothetical scenarios: "만약 형태소 분석 단계에서 동음이의어(예: '산'의 다양한 의미)가 잘못 분석된다면, 이후의 의미 분석(Semantic Analysis) 단계에는 어떤 영향을 미치게 될까요?"
 
 Current Plan: {plan}
 Socratic Depth: {depth} (0: Light, 1: Standard, 2: Deep)
@@ -454,11 +541,30 @@ Available Lecture Context:
 ---
 
 Rules:
-1. Always start with a brief, encouraging, high-level summary or hint, and immediately close with a meta-cognitive question that pushes the student to reflect, analyze, or explain the logic.
+{rule_1_instruction}
 2. Keep the overall response friendly, academic, and extremely encouraging.
-3. Use the provided lecture context to ensure the hint is accurate and grounded.
-4. Detect frustration: if the student is struggling, offer slightly more scaffolding (a slightly more descriptive hint) before asking the meta-cognitive question.
-5. Respond naturally in Korean, adopting the persona of a warm Socratic coach."""
+3. Use the provided lecture context to ensure the hint and question are accurate, grounded, and specific to the lecture materials.
+4. Detect frustration: if the student is struggling, offer slightly more scaffolding (a slightly more descriptive hint) before asking the question.
+5. Respond naturally in Korean, adopting the persona of a warm Socratic coach.
+6. Context Progression: Analyze the conversation history. If the user asks to continue, resume, learn the next part, or summarize "again" (e.g., "다시 요약해줘", "다음 내용 알려줘"), do NOT repeat the previously explained concepts (like NLU/NLG). Instead, identify and summarize the NEXT sequential concepts from the available lecture context (such as traditional NLP components: morphological analysis, syntax parsing, semantic analysis, etc., or Korean linguistic characteristics) and ask a Socratic question on those new concepts."""
+
+    last_msg = history[-1]["content"] if history else ""
+    pending_quiz = state.get("pending_quiz", [])
+    
+    # --- Check if user is submitting quiz answers ---
+    if pending_quiz and _is_quiz_answer(last_msg):
+        grade_report = _grade_quiz(last_msg, pending_quiz)
+        state["draft_answer"] = grade_report
+        state["pending_quiz"] = []  # clear after grading
+        state["tool_results"] = []
+        logger.info("Quiz graded for user submission.")
+        return state
+
+    is_frustrated_in_quiz = False
+    is_quiz_pending = len(pending_quiz) > 0 or _is_last_message_quiz_prompt(history[:-1])
+    if is_quiz_pending and _detect_frustration(last_msg):
+        is_frustrated_in_quiz = True
+        logger.info("User is frustrated during a pending quiz. Adding strong prompt guards to prevent generate_quiz.")
 
     messages = [SystemMessage(content=system_prompt)]
     for m in history:
@@ -467,16 +573,14 @@ Rules:
         elif m["role"] == "assistant":
             messages.append(AIMessage(content=m["content"]))
             
-    # --- Check if user is submitting quiz answers ---
-    last_msg = history[-1]["content"] if history else ""
-    pending_quiz = state.get("pending_quiz", [])
-    if pending_quiz and _is_quiz_answer(last_msg):
-        grade_report = _grade_quiz(last_msg, pending_quiz)
-        state["draft_answer"] = grade_report
-        state["pending_quiz"] = []  # clear after grading
-        state["tool_results"] = []
-        logger.info("Quiz graded for user submission.")
-        return state
+    if is_frustrated_in_quiz:
+        messages.append(SystemMessage(content=(
+            "IMPORTANT: The student is currently taking a quiz (pending_quiz exists) and expressed frustration or said they don't know the answer. "
+            "DO NOT call generate_quiz under any circumstances. "
+            "Instead, do the following:\n"
+            "1. Offer direct, encouraging support and a helpful hint for the quiz questions.\n"
+            "2. Inform them clearly that they can type '그냥 답 알려줘' if they want to give up and reveal the correct answers immediately."
+        )))
 
     response = llm.bind_tools(LANGCHAIN_TOOLS).invoke(messages)
     draft = _get_content(response)

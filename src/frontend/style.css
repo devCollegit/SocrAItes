@@ -140,12 +140,38 @@ body {
 .depth-name { font-weight: 600; font-size: 0.8rem; }
 .depth-sub { font-size: 0.6rem; color: var(--text-muted); }
 
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
 .stat-card {
     background: var(--bg-card); border: 1px solid var(--border);
     padding: 10px; border-radius: var(--radius-md); text-align: center;
 }
 .stat-value { display: block; font-size: 1.1rem; font-weight: 700; color: var(--primary); font-family: monospace; }
+.stat-value.level-safe {
+    color: var(--primary);
+}
+.stat-value.level-warning {
+    color: #f97316; /* Orange */
+    text-shadow: 0 0 8px rgba(249, 115, 22, 0.3);
+}
+.stat-value.level-danger {
+    color: #ef4444; /* Red */
+    text-shadow: 0 0 10px rgba(239, 68, 68, 0.4);
+    animation: pulse-red 2.0s infinite alternate;
+}
 .stat-label { font-size: 0.6rem; color: var(--text-muted); }
+
+@keyframes pulse-red {
+    from {
+        text-shadow: 0 0 4px rgba(239, 68, 68, 0.2);
+    }
+    to {
+        text-shadow: 0 0 12px rgba(239, 68, 68, 0.6);
+    }
+}
 
 .sidebar-footer { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
 .new-chat-btn {
@@ -523,5 +549,178 @@ textarea {
     word-break: break-all;
     border-left: 2px solid var(--primary);
 }
+
+/* Inline RAG References Styles */
+.message-body {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+}
+
+.message-references {
+    margin-top: 4px;
+    display: flex;
+    flex-direction: column;
+    align-self: flex-start;
+    width: 100%;
+    max-width: 550px;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: rgba(22, 26, 33, 0.4);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
+    transition: var(--transition);
+}
+
+[data-theme="light"] .message-references {
+    background: rgba(255, 255, 255, 0.6);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.05);
+}
+
+.message-references:hover {
+    border-color: var(--border-hover);
+}
+
+.references-toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: left;
+    transition: var(--transition);
+}
+
+.references-toggle:hover {
+    color: var(--primary);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+[data-theme="light"] .references-toggle:hover {
+    background: rgba(0, 0, 0, 0.02);
+}
+
+.references-toggle .ref-icon {
+    width: 14px;
+    height: 14px;
+    color: var(--primary);
+    flex-shrink: 0;
+}
+
+.references-toggle .ref-arrow {
+    margin-left: auto;
+    font-size: 0.6rem;
+    transition: transform 0.2s ease;
+}
+
+.references-toggle.active {
+    color: var(--text-main);
+    border-bottom: 1px solid var(--border);
+}
+
+.references-toggle.active .ref-arrow {
+    transform: rotate(180deg);
+    color: var(--primary);
+}
+
+.references-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    max-height: 350px;
+    overflow-y: auto;
+}
+
+.ref-item {
+    display: flex;
+    flex-direction: column;
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    transition: var(--transition);
+}
+
+[data-theme="light"] .ref-item {
+    background: rgba(255, 255, 255, 0.8);
+}
+
+.ref-item:hover {
+    border-color: var(--border-hover);
+}
+
+.ref-item-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    cursor: pointer;
+    background: rgba(0, 0, 0, 0.1);
+    font-size: 0.75rem;
+    user-select: none;
+}
+
+[data-theme="light"] .ref-item-header {
+    background: rgba(0, 0, 0, 0.03);
+}
+
+.ref-item-title {
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 320px;
+    color: var(--text-main);
+}
+
+.ref-item-page {
+    background: rgba(212, 175, 55, 0.15);
+    color: var(--primary);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.ref-item-content {
+    padding: 10px;
+    font-size: 0.75rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 120px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+    display: none;
+}
+
+.ref-item.active .ref-item-content {
+    display: block;
+}
+
+.ref-item .ref-expand-icon {
+    font-size: 0.6rem;
+    color: var(--text-muted);
+    transition: transform 0.2s ease;
+    margin-left: 8px;
+}
+
+.ref-item.active .ref-expand-icon {
+    transform: rotate(180deg);
+    color: var(--primary);
+}
+
 
 

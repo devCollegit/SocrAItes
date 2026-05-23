@@ -14,7 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const themeToggle = document.getElementById('theme-toggle');
     const statTurns = document.getElementById('stat-turns');
     const statDocs = document.getElementById('stat-docs');
-    const docsList = document.getElementById('docs-list');
+    const statFrustration = document.getElementById('stat-frustration');
     const quickChips = document.querySelectorAll('.chip');
     const attachBtn = document.getElementById('attach-btn');
     const pdfUpload = document.getElementById('pdf-upload');
@@ -27,6 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let isThinking = false;
     let turnCount = 0;
     let docCount = 0;
+    let frustrationLevel = 0;
 
     // Markdown Configuration
     marked.setOptions({
@@ -120,6 +121,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     const data = JSON.parse(jsonStr);
                     if (data.type === 'node_end') {
                         updateProgressStep(loadingId, data.node, data.output);
+                        if (data.node === 'query_contextualizer' && data.output.frustration_level !== undefined) {
+                            updateFrustrationUI(data.output.frustration_level);
+                        }
                     } else if (data.type === 'final_result') {
                         finalResult = data;
                     } else if (data.type === 'error') {
@@ -156,9 +160,13 @@ document.addEventListener('DOMContentLoaded', () => {
             turnCount++;
             statTurns.innerText = turnCount;
 
-            // Remove Loading & Add AI Response
+            if (data.frustration_level !== undefined) {
+                updateFrustrationUI(data.frustration_level);
+            }
+
+            // Remove Loading & Add AI Response (with retrieved docs inline)
             removeLoadingIndicator(loadingId);
-            addMessage(data.answer, 'ai');
+            addMessage(data.answer, 'ai', data.retrieved_docs);
 
             // Update Plan
             if (data.plan) {
@@ -167,36 +175,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 setTimeout(() => currentPlan.classList.remove('updated'), 1000);
             }
 
-            // Update Retrieved Docs
+            // Update Session Stats Docs Count
             if (data.retrieved_docs && data.retrieved_docs.length > 0) {
                 docCount = data.retrieved_docs.length;
                 statDocs.innerText = docCount;
-                docsList.innerHTML = data.retrieved_docs.map((doc, idx) => {
-                    const sourceName = doc.metadata?.source || '강의 자료 일부';
-                    const pageNum = doc.metadata?.page || 1;
-                    const text = doc.text || '';
-                    return `
-                        <div class="doc-item-collapsible" data-index="${idx}">
-                            <div class="doc-item-header">
-                                <div class="doc-item-left">
-                                    <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd"/></svg>
-                                    <span class="doc-title-text" title="${sourceName}">${sourceName}</span>
-                                    <span class="doc-page-badge">p.${pageNum}</span>
-                                </div>
-                                <span class="doc-expand-icon">▼</span>
-                            </div>
-                            <div class="doc-snippet-content">${text}</div>
-                        </div>
-                    `;
-                }).join('');
-
-                // Add toggle click handlers
-                docsList.querySelectorAll('.doc-item-header').forEach(header => {
-                    header.addEventListener('click', () => {
-                        const item = header.parentElement;
-                        item.classList.toggle('active');
-                    });
-                });
             }
 
 
@@ -209,13 +191,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function addMessage(text, role) {
+    function addMessage(text, role, retrievedDocs = []) {
         const msgDiv = document.createElement('div');
         msgDiv.className = `message ${role}`;
         
         const avatarDiv = document.createElement('div');
         avatarDiv.className = 'msg-avatar';
         avatarDiv.innerText = role === 'ai' ? 'S' : (role === 'system' ? '⚙️' : 'U');
+
+        const bodyDiv = document.createElement('div');
+        bodyDiv.className = 'message-body';
 
         const contentDiv = document.createElement('div');
         contentDiv.className = 'message-content';
@@ -226,8 +211,64 @@ document.addEventListener('DOMContentLoaded', () => {
             contentDiv.innerHTML = role === 'ai' ? marked.parse(text) : text.replace(/\n/g, '<br>');
         }
         
+        bodyDiv.appendChild(contentDiv);
+
+        // Add RAG references if it is AI and retrievedDocs exist
+        if (role === 'ai' && retrievedDocs && retrievedDocs.length > 0) {
+            const refsDiv = document.createElement('div');
+            refsDiv.className = 'message-references';
+
+            const toggleBtn = document.createElement('button');
+            toggleBtn.className = 'references-toggle';
+            toggleBtn.innerHTML = `
+                <svg class="ref-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd"/></svg>
+                <span>참조한 강의 자료 (${retrievedDocs.length}개)</span>
+                <span class="ref-arrow">▼</span>
+            `;
+
+            const listDiv = document.createElement('div');
+            listDiv.className = 'references-list';
+            listDiv.style.display = 'none';
+
+            listDiv.innerHTML = retrievedDocs.map((doc, idx) => {
+                const sourceName = doc.metadata?.source || '강의 자료 일부';
+                const pageNum = doc.metadata?.page || 1;
+                const docText = doc.text || '';
+                return `
+                    <div class="ref-item" data-index="${idx}">
+                        <div class="ref-item-header">
+                            <span class="ref-item-title" title="${sourceName}">${sourceName}</span>
+                            <span class="ref-item-page">p.${pageNum}</span>
+                            <span class="ref-expand-icon">▼</span>
+                        </div>
+                        <div class="ref-item-content">${docText}</div>
+                    </div>
+                `;
+            }).join('');
+
+            // Toggle whole list
+            toggleBtn.addEventListener('click', () => {
+                const isExpanded = listDiv.style.display === 'flex';
+                listDiv.style.display = isExpanded ? 'none' : 'flex';
+                toggleBtn.classList.toggle('active', !isExpanded);
+                scrollToBottom();
+            });
+
+            // Toggle individual item content
+            listDiv.querySelectorAll('.ref-item-header').forEach(header => {
+                header.addEventListener('click', () => {
+                    const item = header.parentElement;
+                    item.classList.toggle('active');
+                });
+            });
+
+            refsDiv.appendChild(toggleBtn);
+            refsDiv.appendChild(listDiv);
+            bodyDiv.appendChild(refsDiv);
+        }
+
         msgDiv.appendChild(avatarDiv);
-        msgDiv.appendChild(contentDiv);
+        msgDiv.appendChild(bodyDiv);
         chatMessages.appendChild(msgDiv);
         scrollToBottom();
     }
@@ -310,6 +351,23 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    function updateFrustrationUI(level) {
+        frustrationLevel = level;
+        let displayVal = frustrationLevel;
+        let levelClass = 'level-safe';
+        if (frustrationLevel >= 3) {
+            displayVal = `${frustrationLevel} 😰`;
+            levelClass = 'level-danger';
+        } else if (frustrationLevel >= 1) {
+            displayVal = `${frustrationLevel} ⚡`;
+            levelClass = 'level-warning';
+        }
+        if (statFrustration) {
+            statFrustration.innerText = displayVal;
+            statFrustration.className = `stat-value ${levelClass}`;
+        }
+    }
+
     // Event Listeners
     sendBtn.addEventListener('click', sendMessage);
     userInput.addEventListener('keydown', (e) => {
@@ -374,8 +432,8 @@ document.addEventListener('DOMContentLoaded', () => {
             docCount = 0;
             statTurns.innerText = '0';
             statDocs.innerText = '0';
+            updateFrustrationUI(0);
             currentPlan.innerHTML = '<div class="plan-empty"><p>질문하면 AI가<br>학습 계획을 세웁니다</p></div>';
-            docsList.innerHTML = '<div class="docs-empty">참조 자료 없음</div>';
         }
     });
 
