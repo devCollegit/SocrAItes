@@ -121,7 +121,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const data = JSON.parse(jsonStr);
                     if (data.type === 'node_end') {
                         updateProgressStep(loadingId, data.node, data.output);
-                        if (data.node === 'query_contextualizer' && data.output.frustration_level !== undefined) {
+                        if (data.node === 'coordinator' && data.output.frustration_level !== undefined) {
                             updateFrustrationUI(data.output.frustration_level);
                         }
                     } else if (data.type === 'final_result') {
@@ -298,8 +298,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const nodeLabels = {
-        'query_contextualizer': '🔍 질문 분석 및 문맥 이해',
-        'coordinator': '🧭 질문 유형 분류 및 탐구 결정',
+        'coordinator': '🔍 질문 분석 및 문맥 이해 & 유형 분류',
         'planner': '📋 Socratic 학습 계획 수립',
         'retrieval': '📚 Elasticsearch 강의 자료 검색',
         'supervisor': '🧠 Socratic 튜터 답변 생성',
@@ -312,10 +311,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!stepsContainer) return;
 
         let detail = '';
-        if (node === 'query_contextualizer') {
-            detail = `재구성 결과: "${output.contextualized_query}"`;
-        } else if (node === 'coordinator') {
-            detail = `판별 결과: ${output.next_step === 'planner' ? '개념 학습 (PLAN)' : '일반 대화 (DIRECT)'}`;
+        if (node === 'coordinator') {
+            const routeText = output.next_step === 'planner' ? '개념 학습 (PLAN)' : '일반 대화 (DIRECT)';
+            detail = `재구성 결과: "${output.contextualized_query}"<br>판별 결과: ${routeText}`;
         } else if (node === 'planner') {
             detail = `Socratic 튜터링 가이드 구성 완료`;
         } else if (node === 'retrieval') {
