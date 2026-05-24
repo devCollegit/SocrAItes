@@ -45,8 +45,7 @@ LangGraph 기반의 워크플로우를 구성하는 7개 노드의 역할과 실
 
 ```mermaid
 flowchart TD
-    User([User Query]) --> query_contextualizer
-    query_contextualizer --> coordinator
+    User([User Query]) --> coordinator
     
     coordinator -->|학습 질의: PLAN| planner
     coordinator -->|일상 대화: DIRECT| direct_response
@@ -58,13 +57,13 @@ flowchart TD
     supervisor --> evaluator
     
     evaluator -->|검증 통과| FinalAnswer([Final Answer])
-    evaluator -->|검증 실패: 피드백 루프| query_contextualizer
+    evaluator -->|검증 실패: 피드백 루프| coordinator
 ```
 
 ---
 
-### [Node 1] query_contextualizer (문맥 인지 쿼리 재구성기)
-* **역할:** 이전 대화 기록과 학생의 최신 발화를 융합하여, RAG 검색 및 주제 분류에 최적화된 한국어 독립 단독 쿼리(Standalone Query)를 재생성합니다.
+### [Node 1] coordinator (문맥 인지 및 학습 경로 분류기)
+* **역할:** 이전 대화 기록과 학생의 최신 발화를 융합하여 RAG 검색 및 주제 분류에 최적화된 독립 단독 쿼리(Standalone Query)를 재구성하고, 학술적 개념 학습이 필요한 질의(`PLAN` 경로)인지 혹은 단순 인사 및 일상적 대화(`DIRECT` 경로)인지 판단하여 분기합니다.
 * **입출력 데이터 예시:**
   * **Input Context (대화 이력):**
     ```yaml
@@ -72,28 +71,15 @@ flowchart TD
     - Tutor: "데드락은 자원을 기다리며 무한 대기하는 상태입니다... (생략)"
     - Student (최신 입력): "그거 발생 조건이 뭐야?"
     ```
-  * **Output (Contextualized Query):**
+  * **Output:**
     ```yaml
     contextualized_query: "데드락이 발생하는 조건은 무엇인가요?"
+    next_step: "planner"  # 학술 질문으로 판별되어 플래너 노드로 이동
     ```
 
 ---
 
-### [Node 2] coordinator (학습 경로 분류기)
-* **역할:** 재구성된 쿼리를 언어적으로 분석하여, 학술적 개념 학습이 필요한 질의(`PLAN` 경로)인지 혹은 단순 인사 및 일상적 대화(`DIRECT` 경로)인지 판단하여 분기합니다.
-* **입출력 데이터 예시:**
-  * **Input Context:**
-    ```yaml
-    contextualized_query: "데드락이 발생하는 조건은 무엇인가요?"
-    ```
-  * **Output (Routing Decision):**
-    ```yaml
-    route: "planner"  # 학술 질문으로 판별되어 플래너 노드로 이동
-    ```
-
----
-
-### [Node 3] planner (학습 계획 설계자)
+### [Node 2] planner (학습 계획 설계자)
 * **역할:** 사용자의 학습 성향과 Socratic Depth 수준(Light, Standard, Deep)을 바탕으로 탐구 타겟을 정의하고, 튜터링 세션의 세부 실행 계획(Plan)을 수립합니다.
 * **입출력 데이터 예시:**
   * **Input Context:**
@@ -113,7 +99,7 @@ flowchart TD
 
 ---
 
-### [Node 4] retrieval_node (하이브리드 RAG 검색기)
+### [Node 3] retrieval_node (하이브리드 RAG 검색기)
 * **역할:** Elasticsearch를 대상으로 `BM25 형태소 검색`과 `BAAI/bge-m3 Dense 벡터 검색`을 결합한 하이브리드 검색을 수행하고, **코사인 유사도 임계값 필터링(`>= 0.4`)** 및 **RRF(Reciprocal Rank Fusion)**를 적용해 완벽하게 유의미한 강의 조각만을 엄선합니다.
 * **입출력 데이터 예시:**
   * **Input Context (Search Query):**
@@ -131,7 +117,7 @@ flowchart TD
 
 ---
 
-### [Node 5] direct_response (일상 대화 응답기)
+### [Node 4] direct_response (일상 대화 응답기)
 * **역할:** `coordinator`가 일상 대화(`DIRECT`)로 판별한 인풋(예: "안녕하세요!", "고마워요")에 대해, 소크라테스 대화법 대신 친절하고 자연스러운 인삿말 및 기능 안내를 임시 답변으로 도출합니다.
 * **입출력 데이터 예시:**
   * **Input Context:**
@@ -145,7 +131,7 @@ flowchart TD
 
 ---
 
-### [Node 6] supervisor (소크라테스 대화 조율자)
+### [Node 5] supervisor (소크라테스 대화 조율자)
 * **역할:** 검색된 강의자료 컨텍스트와 대화의 흐름을 융합하여 Socratic 답변 초안을 생성합니다. 정답을 흘리지 않으면서, **1~2줄의 고수준 직관적 힌트(Scaffolding)**를 먼저 친절히 주고, 이어서 학습자의 **메타인지를 자극하는 날카로운 질문**을 덧붙입니다.
 * **입출력 데이터 예시:**
   * **Input Context:**
@@ -163,7 +149,7 @@ flowchart TD
 
 ---
 
-### [Node 7] evaluator (답변 품질 평가자)
+### [Node 6] evaluator (답변 품질 평가자)
 * **역할:** 완성된 답변 초안이 SocrAItes의 튜터링 원칙을 철저하게 준수하고 있는지(정답 노출 유무, 한국어 어조의 자연스러움, 메타인지 유도 질문 포함 여부) 자가 평가(Self-Correction)하여 통과 또는 재작성을 결정합니다.
 * **입출력 데이터 예시:**
   * **Input Context (Draft Response):**

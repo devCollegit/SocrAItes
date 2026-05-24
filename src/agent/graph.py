@@ -286,30 +286,45 @@ if os.getenv("OPENAI_API_KEY"):
 else:
     # Mock LLM for testing frontend when API key is missing
     from langchain_core.language_models.fake import FakeListLLM
-    llm = FakeListLLM(responses=["Socratic response mock: How would you define this concept in your own words?", "Interesting. Can you provide an example?", "DIRECT", "PLAN"])
+    llm = FakeListLLM(responses=[
+        '{"contextualized_query": "안녕하세요!", "routing_decision": "DIRECT"}',
+        "안녕하세요! 무엇을 공부하고 싶으신가요?",
+        '{"contextualized_query": "CAP 정리에 대해 알고 싶어요.", "routing_decision": "PLAN"}',
+        "CAP theorem study plan",
+        "How would you explain the CAP theorem in your own words?",
+        "Good job!"
+    ])
 
 # ---------------------------------------------------------------------------
 # Core Agent Nodes
 # ---------------------------------------------------------------------------
 
-REWRITER_PROMPT = """You are an expert Query Reformulator for a Socratic learning assistant.
-Your task is to analyze the conversation history and the latest user message, and reformulate it into a standalone, search-optimized query in Korean.
+COMBINED_COORDINATOR_PROMPT = """You are the Coordinator and Query Reformulator for SocrAItes, a Socratic learning assistant.
 
-Instructions:
+Your task is to analyze the conversation history and the latest user message to do two things:
+1. Reformulate the latest user message into a standalone, search-optimized query in Korean.
+2. Classify whether the user's intent is study-related (academic concepts, lecture materials) or a casual interaction (greetings, gratitude, off-topic, simple navigation).
+
+Instructions for Query Reformulation:
 1. Identify the core academic concept or question the user is asking about.
 2. Incorporate necessary context (concepts, terms, definitions) from the previous turns of the conversation so that the query is fully self-contained.
 3. Keep the query concise, focused on key concepts, and ideal for retrieval from lecture materials (PDF).
 4. If the latest message is a simple greeting, thank you, casual chit-chat, or does not require any context (it is already self-contained), return it exactly as-is.
 5. If the latest message asks to continue, resume, show the next content, or summarize "again" (e.g., "다시 요약해줘", "다음 내용 알려줘") a broad topic that has already been partially discussed in the history, reformulate the query to search for the NEXT sequential or REMAINING topics/concepts in that lecture, rather than repeating or focusing on the sub-concepts that were already explained.
-6. Do NOT add any introductory text, explanations, or quotes. Output ONLY the reformulated query.
+
+Instructions for Classification:
+- Output 'PLAN' if the user's query is learning/study-related (about lecture materials, academic concepts, quizzes).
+- Output 'DIRECT' if the user's query is casual (greeting, thanks, off-topic) or simple navigation.
+
+You MUST respond in JSON format with the following keys:
+- "contextualized_query": The reformulated standalone query in Korean.
+- "routing_decision": Either "PLAN" or "DIRECT".
 
 Conversation History:
 {history_text}
 
 Latest User Message:
-{last_message}
-
-Standalone Query (Korean):"""
+{last_message}"""
 
 def _format_history(messages: List[Dict[str, Any]]) -> str:
     formatted = []
@@ -318,14 +333,17 @@ def _format_history(messages: List[Dict[str, Any]]) -> str:
         formatted.append(f"{role}: {msg['content']}")
     return "\n".join(formatted)
 
-def query_contextualizer(state: AgentState) -> AgentState:
-    """Query Contextualizer: Reformulates the user's query in light of conversation history."""
-    logger.info(f"--- [Query Contextualizer] Step ---")
+
+def coordinator(state: AgentState) -> AgentState:
+    """Coordinator & Query Reformulator:
+    1. Reformulates follow-up queries using history.
+    2. Routes to 'planner' (PLAN) or 'direct_response' (DIRECT).
+    """
+    logger.info(f"--- [Coordinator & Contextualizer] Step ---")
     messages = state.get("messages", [])
+    last_message = messages[-1]["content"] if messages else ""
     
     # Calculate or accumulate frustration level
-    # Since the backend is stateless and runs a new graph execution on every turn,
-    # we scan the entire conversation history to count user frustration signals.
     frustration_count = 0
     for msg in messages:
         if msg.get("role") == "user":
@@ -337,61 +355,76 @@ def query_contextualizer(state: AgentState) -> AgentState:
     # Check if there is a pending quiz and the user expressed frustration
     pending_quiz = state.get("pending_quiz", [])
     is_frustrated_in_quiz = False
-    # Check if a quiz is pending either from state or conversation history (last tutor message was quiz)
     is_quiz_pending = len(pending_quiz) > 0 or _is_last_message_quiz_prompt(messages[:-1])
     if is_quiz_pending and messages and messages[-1].get("role") == "user":
         last_user_text = messages[-1].get("content", "")
         if _detect_frustration(last_user_text):
             is_frustrated_in_quiz = True
 
+    # Optimization/Bypass: If user is frustrated during pending quiz, route directly to planner
     if is_frustrated_in_quiz:
-        state["contextualized_query"] = messages[-1]["content"]
-        logger.info(f"Frustrated during pending quiz. Bypassing LLM query rewriting. Query: '{state['contextualized_query']}'")
+        state["contextualized_query"] = last_message
+        state["next_step"] = "planner"
+        logger.info(f"Frustrated during pending quiz. Bypassing LLM call. Query: '{last_message}', Routing: PLAN")
         _log_trace(
-            step="QueryContextualizer",
-            purpose="Determine search-optimized query. Bypassed LLM query rewriting because user is frustrated during a pending quiz.",
+            step="Coordinator",
+            purpose="Analyze query and classify. Bypassed LLM due to frustration during quiz.",
             inputs={
-                "Original User Message": state["contextualized_query"],
+                "Original User Message": last_message,
                 "Frustration Level": frustration_count,
                 "Pending Quiz Count": len(pending_quiz)
             },
-            decision="Bypassed LLM due to frustration during quiz. Using original query."
+            decision="Bypassed LLM. Using original query as contextualized query and routing to PLAN."
         )
         return state
 
-    if len(messages) <= 1:
-        # Optimization: Bypassing LLM call on first turn
-        state["contextualized_query"] = messages[-1]["content"] if messages else ""
-        logger.info(f"First-turn query. Bypassing LLM query rewriting. Query: '{state['contextualized_query']}'")
-        _log_trace(
-            step="QueryContextualizer",
-            purpose="Determine search-optimized query. Bypassed LLM query rewriting because this is the first turn.",
-            inputs={
-                "Original User Message": state["contextualized_query"],
-                "Frustration Level": frustration_count
-            },
-            decision="Bypassed LLM. Using original query as contextualized query."
-        )
-        return state
-        
+    # If first turn, we still need classification, but we can bypass reformulation (use original message)
+    is_first_turn = len(messages) <= 1
+    
     history_text = _format_history(messages)
-    last_message = messages[-1]["content"]
+    prompt = COMBINED_COORDINATOR_PROMPT.format(history_text=history_text, last_message=last_message)
     
-    prompt = REWRITER_PROMPT.format(history_text=history_text, last_message=last_message)
-    response = llm.invoke([HumanMessage(content=prompt)])
-    rewritten = _get_content(response).strip()
+    # Call LLM with JSON mode if supported
+    if os.getenv("OPENAI_API_KEY"):
+        response = llm.bind(response_format={"type": "json_object"}).invoke([HumanMessage(content=prompt)])
+    else:
+        response = llm.invoke([HumanMessage(content=prompt)])
+        
+    response_str = _get_content(response).strip()
     
-    # Strip quotes if any returned by LLM
-    if rewritten.startswith('"') and rewritten.endswith('"'):
-        rewritten = rewritten[1:-1].strip()
-    elif rewritten.startswith("'") and rewritten.endswith("'"):
-        rewritten = rewritten[1:-1].strip()
+    # Safely parse JSON
+    content = response_str
+    if content.startswith("```"):
+        content = re.sub(r"^```json\s*", "", content, flags=re.IGNORECASE)
+        content = re.sub(r"\s*```$", "", content)
+        content = content.strip()
+        
+    try:
+        parsed = json.loads(content)
+        rewritten = parsed.get("contextualized_query", "").strip()
+        decision = parsed.get("routing_decision", "").strip().upper()
+    except Exception as e:
+        logger.error(f"Failed to parse combined coordinator output as JSON: {e}. Fallback to raw parsing.")
+        rewritten = last_message
+        if "PLAN" in content.upper():
+            decision = "PLAN"
+        else:
+            decision = "DIRECT"
+            
+    # If it was the first turn or rewriter returned empty, fallback to original query
+    if is_first_turn or not rewritten:
+        rewritten = last_message
         
     state["contextualized_query"] = rewritten
-    logger.info(f"Original query: '{last_message}' -> Contextualized query: '{rewritten}'")
+    if "PLAN" in decision:
+        state["next_step"] = "planner"
+    else:
+        state["next_step"] = "direct_response"
+        
+    logger.info(f"Contextualized Query: '{rewritten}' | Routing: {state['next_step']}")
     _log_trace(
-        step="QueryContextualizer",
-        purpose="Reformulate follow-up user query using conversation history into a standalone, search-optimized query.",
+        step="Coordinator",
+        purpose="Reformulate follow-up user query and classify intent as casual (DIRECT) or study-related (PLAN).",
         inputs={
             "Original User Message": last_message,
             "History Length (turns)": len(messages) - 1,
@@ -399,48 +432,13 @@ def query_contextualizer(state: AgentState) -> AgentState:
         },
         prompt_details={
             "Formatted History": history_text,
-            "Reformulation Prompt Template": REWRITER_PROMPT.replace("{history_text}", "...").replace("{last_message}", last_message)
+            "Combined Prompt Template": COMBINED_COORDINATOR_PROMPT.replace("{history_text}", "...").replace("{last_message}", last_message)
         },
-        response=rewritten,
-        decision=f"Rewritten Standalone Query: '{rewritten}'"
-    )
-    return state
-
-
-def coordinator(state: AgentState) -> AgentState:
-    """Coordinator: Analyzes the user query to decide the next step.
-    Routes to 'planner' for study queries or 'direct_response' for simple interactions.
-    """
-    last_user_message = state.get("contextualized_query", "")
-    if not last_user_message:
-        last_user_message = state["messages"][-1]["content"] if state["messages"] else ""
-    logger.info(f"--- [Coordinator] Entry Point ---")
-    
-    prompt = f"""You are the Coordinator for SocrAItes, a Socratic learning coach.
-Analyze the user's message: "{last_user_message}"
- 
-Decide if this is:
-1. A learning/study query related to lecture materials or academic concepts.
-2. A casual interaction (greeting, thanks, off-topic, etc.) or a simple navigation request.
- 
-Respond with ONLY one word: 'PLAN' for category 1, or 'DIRECT' for category 2."""
-    
-    response = llm.invoke([HumanMessage(content=prompt)])
-    decision = _get_content(response).strip().upper()
-    
-    if "PLAN" in decision:
-        state["next_step"] = "planner"
-    else:
-        state["next_step"] = "direct_response"
-        
-    logger.info(f"Coordinator Decision: {state['next_step']}")
-    _log_trace(
-        step="Coordinator",
-        purpose="Analyze the contextualized query to classify it as a casual conversation (DIRECT) or study-related query (PLAN).",
-        inputs={"Contextualized Query": last_user_message},
-        prompt_details=prompt,
-        response=decision,
-        decision=f"Routing Key: {state['next_step']}"
+        response=response_str,
+        decision={
+            "Contextualized Query": rewritten,
+            "Routing Decision": state["next_step"]
+        }
     )
     return state
 
@@ -725,7 +723,6 @@ def retrieval_node(state: AgentState) -> AgentState:
 def build_graph() -> StateGraph:
     graph = StateGraph(AgentState)
 
-    graph.add_node("query_contextualizer", query_contextualizer)
     graph.add_node("coordinator", coordinator)
     graph.add_node("planner", planner)
     graph.add_node("direct_response", direct_response)
@@ -733,9 +730,7 @@ def build_graph() -> StateGraph:
     graph.add_node("supervisor", supervisor)
     graph.add_node("evaluator", evaluator)
 
-    graph.set_entry_point("query_contextualizer")
-    
-    graph.add_edge("query_contextualizer", "coordinator")
+    graph.set_entry_point("coordinator")
     
     graph.add_conditional_edges(
         "coordinator",
