@@ -30,8 +30,10 @@ from .agent.graph import GRAPH
 from .agent.state import DEFAULT_STATE
 from .rag.document_processor import process_pdf, compute_file_hash
 from .rag.vectorstore import add_documents, get_registered_documents, delete_document
+from .db.database import init_db, create_session, log_message, get_messages, list_sessions, delete_session
 
 app = FastAPI(title="SocrAItes API")
+init_db()
 
 # Ensure uploads directory exists
 UPLOAD_DIR = "temp_uploads"
@@ -75,12 +77,23 @@ class ChatResponse(BaseModel):
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    session_id = request.session_id or str(uuid.uuid4())
+    # 세션 생성 또는 기존 세션 사용
+    if request.session_id:
+        session_id = request.session_id
+    else:
+        first_msg = request.messages[-1].content if request.messages else "새 대화"
+        title = first_msg[:30] + ("..." if len(first_msg) > 30 else "")
+        session_id = create_session(title=title)
     logger.info(f"[/chat] session={session_id} | messages={len(request.messages)} | depth={request.socratic_depth}")
     try:
         initial_messages = [{"role": m.role, "content": m.content} for m in request.messages]
+        initial_messages = initial_messages[-20:]  # 최근 10턴(20개 메시지)만 유지
         logger.debug(f"[/chat] last user message: {initial_messages[-1]['content'][:100] if initial_messages else '(empty)'}")
-        
+
+        # 사용자 메시지 DB 저장
+        if initial_messages:
+            log_message(session_id, "user", initial_messages[-1]["content"])
+
         state = DEFAULT_STATE.copy()
         state.update({
             "messages": initial_messages,
@@ -110,10 +123,13 @@ async def chat(request: ChatRequest):
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                 
                 # Send final result at the end (with tool_results)
+                answer = current_state.get("draft_answer", "I'm sorry, I couldn't formulate a response.")
+                # assistant 응답 DB 저장
+                log_message(session_id, "assistant", answer)
                 final_data = {
                     "type": "final_result",
                     "session_id": session_id,
-                    "answer": current_state.get("draft_answer", "I'm sorry, I couldn't formulate a response."),
+                    "answer": answer,
                     "retrieved_docs": current_state.get("retrieved_docs", []),
                     "plan": current_state.get("plan"),
                     "tool_results": current_state.get("tool_results", []),
@@ -206,6 +222,39 @@ async def delete_pdf_document(filename: str):
         }
     except Exception as e:
         logger.error(f"[/documents/{filename}] Error deleting document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sessions")
+async def get_sessions():
+    """전체 세션 목록 반환 (최신순)."""
+    try:
+        sessions = list_sessions()
+        return {"sessions": sessions}
+    except Exception as e:
+        logger.error(f"[/sessions] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/sessions/{session_id}")
+async def remove_session(session_id: str):
+    """세션 및 관련 메시지 전체 삭제."""
+    try:
+        delete_session(session_id)
+        return {"status": "deleted", "session_id": session_id}
+    except Exception as e:
+        logger.error(f"[DELETE /sessions/{session_id}] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str):
+    """특정 세션의 대화 내역 반환."""
+    try:
+        msgs = get_messages(session_id)
+        return {"session_id": session_id, "messages": msgs}
+    except Exception as e:
+        logger.error(f"[/sessions/{session_id}/messages] Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

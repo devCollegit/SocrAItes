@@ -19,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const attachBtn = document.getElementById('attach-btn');
     const pdfUpload = document.getElementById('pdf-upload');
     const registeredDocsList = document.getElementById('registered-docs-list');
+    const sessionList = document.getElementById('session-list');
 
     // State
     let messages = [];
@@ -28,6 +29,26 @@ document.addEventListener('DOMContentLoaded', () => {
     let turnCount = 0;
     let docCount = 0;
     let frustrationLevel = 0;
+
+    // 커스텀 확인 모달
+    const deleteModal = document.getElementById('delete-modal');
+    function showDeleteModal() {
+        return new Promise(resolve => {
+            deleteModal.style.display = 'flex';
+            const onConfirm = () => { cleanup(); resolve(true); };
+            const onCancel  = () => { cleanup(); resolve(false); };
+            const onOverlay = (e) => { if (e.target === deleteModal) { cleanup(); resolve(false); } };
+            function cleanup() {
+                deleteModal.style.display = 'none';
+                document.getElementById('modal-confirm').removeEventListener('click', onConfirm);
+                document.getElementById('modal-cancel').removeEventListener('click', onCancel);
+                deleteModal.removeEventListener('click', onOverlay);
+            }
+            document.getElementById('modal-confirm').addEventListener('click', onConfirm);
+            document.getElementById('modal-cancel').addEventListener('click', onCancel);
+            deleteModal.addEventListener('click', onOverlay);
+        });
+    }
 
     // Markdown Configuration
     marked.setOptions({
@@ -180,6 +201,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 docCount = data.retrieved_docs.length;
                 statDocs.innerText = docCount;
             }
+
+            // 세션 목록 갱신
+            await loadSessions();
 
 
         } catch (error) {
@@ -423,18 +447,17 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     newChatBtn.addEventListener('click', () => {
-        if (confirm('대화 내용을 초기화하고 새로 시작하시겠습니까?')) {
-            chatMessages.innerHTML = '';
-            welcomeBanner.style.display = 'flex';
-            messages = [];
-            sessionId = null;
-            turnCount = 0;
-            docCount = 0;
-            statTurns.innerText = '0';
-            statDocs.innerText = '0';
-            updateFrustrationUI(0);
-            currentPlan.innerHTML = '<div class="plan-empty"><p>질문하면 AI가<br>학습 계획을 세웁니다</p></div>';
-        }
+        chatMessages.innerHTML = '';
+        welcomeBanner.style.display = 'flex';
+        messages = [];
+        sessionId = null;
+        turnCount = 0;
+        docCount = 0;
+        statTurns.innerText = '0';
+        statDocs.innerText = '0';
+        updateFrustrationUI(0);
+        currentPlan.innerHTML = '<div class="plan-empty"><p>질문하면 AI가<br>학습 계획을 세웁니다</p></div>';
+        loadSessions();
     });
 
     // Fetch and render registered PDF documents
@@ -501,5 +524,97 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Initial fetch of registered documents
     fetchRegisteredDocuments();
+
+    // 세션 목록 불러오기
+    async function loadSessions() {
+        try {
+            const response = await fetch('/sessions');
+            if (!response.ok) return;
+            const data = await response.json();
+            const sessions = data.sessions || [];
+
+            if (sessions.length === 0) {
+                sessionList.innerHTML = '<div class="session-empty">대화 기록 없음</div>';
+                return;
+            }
+
+            sessionList.innerHTML = sessions.map(s => {
+                const date = new Date(s.updated_at).toLocaleDateString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+                const title = s.title || '새 대화';
+                const isActive = s.id === sessionId ? 'active' : '';
+                return `
+                    <div class="session-item ${isActive}" data-id="${s.id}">
+                        <div class="session-item-body">
+                            <div class="session-item-title">${title}</div>
+                            <div class="session-item-date">${date}</div>
+                        </div>
+                        <button class="session-delete-btn" data-id="${s.id}" title="삭제">
+                            <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"/></svg>
+                        </button>
+                    </div>
+                `;
+            }).join('');
+
+            sessionList.querySelectorAll('.session-item').forEach(item => {
+                item.addEventListener('click', (e) => {
+                    if (e.target.closest('.session-delete-btn')) return;
+                    loadSession(item.dataset.id);
+                });
+            });
+
+            sessionList.querySelectorAll('.session-delete-btn').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    const id = btn.dataset.id;
+                    if (!await showDeleteModal()) return;
+                    await fetch(`/sessions/${id}`, { method: 'DELETE' });
+                    if (sessionId === id) {
+                        chatMessages.innerHTML = '';
+                        if (welcomeBanner) welcomeBanner.style.display = 'flex';
+                        messages = [];
+                        sessionId = null;
+                        turnCount = 0;
+                        statTurns.innerText = '0';
+                    }
+                    await loadSessions();
+                });
+            });
+        } catch (e) {
+            console.error('Failed to load sessions:', e);
+        }
+    }
+
+    // 특정 세션 대화 내역 복원
+    async function loadSession(id) {
+        try {
+            const response = await fetch(`/sessions/${id}/messages`);
+            if (!response.ok) return;
+            const data = await response.json();
+            const msgs = data.messages || [];
+
+            // 화면 초기화
+            chatMessages.innerHTML = '';
+            if (welcomeBanner) welcomeBanner.style.display = 'none';
+            messages = [];
+            turnCount = 0;
+            sessionId = id;
+
+            msgs.forEach(m => {
+                if (m.role === 'user' || m.role === 'assistant') {
+                    addMessage(m.content, m.role === 'assistant' ? 'ai' : 'user');
+                    messages.push({ role: m.role, content: m.content });
+                    if (m.role === 'user') turnCount++;
+                }
+            });
+
+            statTurns.innerText = turnCount;
+            await loadSessions();
+        } catch (e) {
+            console.error('Failed to load session:', e);
+        }
+    }
+
+    // 페이지 로드 시 세션 목록 표시
+    loadSessions();
 });
 
