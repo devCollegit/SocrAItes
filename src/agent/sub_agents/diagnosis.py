@@ -82,13 +82,26 @@ def diagnosis_agent(state: AgentState) -> AgentState:
 
 
 BACKGROUND_DIAGNOSIS_PROMPT = """You are the Background Diagnosis Agent for SocrAItes, a Socratic learning assistant.
-Your task is to analyze the recent conversation history to implicitly diagnose and update the student's learning profile:
-1. Update user profile: If you observe their learning style preference (conceptual vs practical vs concise), preferred tone (encouraging vs strict vs academic), or academic background, call update_user_profile.
-2. Save user strength: If the student explained a Socratic question correctly, showed deep understanding of a technical concept, or scored highly (80%+) on a quiz, call save_strength.
-3. Save user weakness: If the student made a conceptual error, showed persistent confusion, or scored poorly on a quiz, call save_weakness.
 
-Focus on IMPLICIT signals. The student will rarely state these directly. 
-Only call a tool if there is a clear observation in the conversation history. If nothing new is observed, do NOT call any tools.
+Your task is to analyze the recent conversation history to implicitly diagnose and update the student's learning profile by calling `update_user_profile`.
+
+Specifically, you MUST manage and update these two summaries inside `update_user_profile`:
+- strengths_summary: A 1-3 sentence paragraph summarizing active conceptual masteries.
+- weaknesses_summary: A 1-3 sentence paragraph summarizing active conceptual struggles or misconceptions.
+
+Rules for updating summaries (CRITICAL):
+1. If the student displays ANY conceptual error, confusion, or incorrect understanding in the conversation, you MUST add/update that concept in the weaknesses_summary.
+2. If the student explains a concept correctly, resolves a previous misconception, or demonstrates mastery, you MUST add it to the strengths_summary and REMOVE/FADE OUT that concept from the weaknesses_summary.
+3. Fade-out: Maintain a concise summary (max 3 sentences). Drop old or resolved topics.
+4. If there is ANY update to the strengths/weaknesses or learning details, you MUST call `update_user_profile`. Do NOT output text explanations. Only call the tool.
+
+Current User Profile State:
+- Academic Background: {academic_background}
+- Learning Style: {learning_style}
+- Preferred Tone: {preferred_tone}
+- AI Notes: {profile_notes}
+- Current Strengths Summary: "{current_strengths_summary}"
+- Current Weaknesses Summary: "{current_weaknesses_summary}"
 
 Session ID: {session_id}
 User ID: {user_id}"""
@@ -101,7 +114,20 @@ def run_background_diagnosis(session_id: str, user_id: str, messages: List[Dict[
     """
     logger.info(f"--- [Background Diagnosis Task] Started for session={session_id}, user={user_id} ---")
     
-    system_content = BACKGROUND_DIAGNOSIS_PROMPT.format(session_id=session_id, user_id=user_id)
+    # Load current user profile to feed to the background diagnosis prompt
+    from src.db.database import get_user_profile
+    profile = get_user_profile(user_id)
+    
+    system_content = BACKGROUND_DIAGNOSIS_PROMPT.format(
+        session_id=session_id,
+        user_id=user_id,
+        academic_background=profile.get("academic_background", "대학원생"),
+        learning_style=profile.get("learning_style", "conceptual"),
+        preferred_tone=profile.get("preferred_tone", "encouraging"),
+        profile_notes=profile.get("notes", ""),
+        current_strengths_summary=profile.get("strengths_summary", ""),
+        current_weaknesses_summary=profile.get("weaknesses_summary", ""),
+    )
     messages_for_llm = [SystemMessage(content=system_content)]
     for m in messages:
         if m["role"] == "user":
@@ -110,19 +136,19 @@ def run_background_diagnosis(session_id: str, user_id: str, messages: List[Dict[
             messages_for_llm.append(AIMessage(content=m["content"]))
             
     try:
-        # Bind the profiling tools
-        response = llm.bind_tools(LANGCHAIN_TOOLS).invoke(messages_for_llm)
+        # Bind ONLY update_user_profile tool to force updating the summaries and details
+        from src.tools.learning_tools import LANGCHAIN_TOOLS
+        profiling_tools = [t for t in LANGCHAIN_TOOLS if t.name == "update_user_profile"]
+        
+        response = llm.bind_tools(profiling_tools).invoke(messages_for_llm)
         tool_calls = _extract_tool_calls(response)
         
         if tool_calls:
-            # Inject session_id/user_id where appropriate
+            # Inject user_id where appropriate
             for tc in tool_calls:
                 args = tc.get("args", {})
                 if isinstance(args, dict):
                     if tc.get("name") == "update_user_profile":
-                        args["user_id"] = user_id
-                    elif tc.get("name") in ["save_weakness", "save_strength"]:
-                        args["session_id"] = session_id
                         args["user_id"] = user_id
                     tc["args"] = args
                     
@@ -130,7 +156,7 @@ def run_background_diagnosis(session_id: str, user_id: str, messages: List[Dict[
             results = _run_tool_calls(tool_calls)
             logger.info(f"[Background Diagnosis] Results: {results}")
         else:
-            logger.info("[Background Diagnosis] No profile/strength/weakness updates needed.")
+            logger.info("[Background Diagnosis] No profile summary updates needed.")
             
     except Exception as e:
         logger.error(f"[Background Diagnosis] Failed: {e}")

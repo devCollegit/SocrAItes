@@ -18,6 +18,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from src.db.database import init_db, add_schedule, save_weakness as db_save_weakness
+from src.agent.helpers import _log_tool_trace
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,8 @@ class UserProfileRequest(BaseModel):
     preferred_tone: str | None = Field(None, description="User's preferred tone: 'encouraging' (격려형), 'strict' (엄격형), 'academic' (학구형)")
     academic_background: str | None = Field(None, description="User's academic background or major")
     notes: str | None = Field(None, description="Summarized notes/observations about the user's behavior or preferences")
+    strengths_summary: str | None = Field(None, description="A 2-3 sentence paragraph summarizing key active strengths/mastered concepts of the user.")
+    weaknesses_summary: str | None = Field(None, description="A 2-3 sentence paragraph summarizing active weaknesses/struggles/misconceptions of the user.")
     user_id: str | None = Field("default", description="Optional user ID")
 
 
@@ -285,11 +288,13 @@ def generate_quiz(request: Dict[str, Any]) -> Dict[str, Any]:
     # Normalise: ensure exactly num_questions items
     quiz_items = quiz_items[:req.num_questions]
 
-    return {
+    res = {
         "quiz": quiz_items,
         "topic": req.topic,
         "source": "llm_rag" if context and quiz_items and os.getenv("OPENAI_API_KEY") else "template",
     }
+    _log_tool_trace("generate_quiz", request, res)
+    return res
 
 
 def schedule_review(request: Dict[str, Any]) -> Dict[str, Any]:
@@ -310,13 +315,15 @@ def schedule_review(request: Dict[str, Any]) -> Dict[str, Any]:
         description=req.description,
         weakness_id=req.weakness_id,
     )
-    return {
+    res = {
         "status": "scheduled",
         "schedule_id": schedule_id,
         "when": review_at.isoformat(),
         "description": req.description,
         "weakness_id": req.weakness_id,
     }
+    _log_tool_trace("schedule_review", request, res)
+    return res
 
 
 def save_weakness(request: Dict[str, Any]) -> Dict[str, Any]:
@@ -334,12 +341,14 @@ def save_weakness(request: Dict[str, Any]) -> Dict[str, Any]:
         session_id=req.session_id,
         user_id=req.user_id or "default",
     )
-    return {
+    res = {
         "status": "saved",
         "weakness_id": weakness_id,
         "concept": req.concept,
         "severity": req.severity,
     }
+    _log_tool_trace("save_weakness", request, res)
+    return res
 
 
 def escape_to_answer(request: Dict[str, Any]) -> Dict[str, Any]:
@@ -347,12 +356,14 @@ def escape_to_answer(request: Dict[str, Any]) -> Dict[str, Any]:
     """
     req = EscapeResponse(**request)
     logger.info("escape_to_answer called with %s", req)
-    return {
+    res = {
         "mode": "direct_answer",
         "question": req.question,
         "answer": req.answer,
         "message": "User requested direct answer mode.",
     }
+    _log_tool_trace("escape_to_answer", request, res)
+    return res
 
 
 def _tool_generate_quiz(topic: str, num_questions: int = 5) -> Dict[str, Any]:
@@ -389,8 +400,10 @@ def update_user_profile(request: Dict[str, Any]) -> Dict[str, Any]:
         preferred_tone=req.preferred_tone,
         academic_background=req.academic_background,
         notes=req.notes,
+        strengths_summary=req.strengths_summary,
+        weaknesses_summary=req.weaknesses_summary,
     )
-    return {
+    res = {
         "status": "updated",
         "user_id": user_id,
         "profile": {
@@ -400,6 +413,8 @@ def update_user_profile(request: Dict[str, Any]) -> Dict[str, Any]:
             "notes": req.notes,
         }
     }
+    _log_tool_trace("update_user_profile", request, res)
+    return res
 
 
 def save_strength(request: Dict[str, Any]) -> Dict[str, Any]:
@@ -413,11 +428,13 @@ def save_strength(request: Dict[str, Any]) -> Dict[str, Any]:
         session_id=req.session_id,
         user_id=req.user_id or "default",
     )
-    return {
+    res = {
         "status": "saved",
         "strength_id": strength_id,
         "concept": req.concept,
     }
+    _log_tool_trace("save_strength", request, res)
+    return res
 
 
 def _tool_update_user_profile(
@@ -425,6 +442,8 @@ def _tool_update_user_profile(
     preferred_tone: str | None = None,
     academic_background: str | None = None,
     notes: str | None = None,
+    strengths_summary: str | None = None,
+    weaknesses_summary: str | None = None,
     user_id: str = "default",
 ) -> Dict[str, Any]:
     return update_user_profile({
@@ -432,6 +451,8 @@ def _tool_update_user_profile(
         "preferred_tone": preferred_tone,
         "academic_background": academic_background,
         "notes": notes,
+        "strengths_summary": strengths_summary,
+        "weaknesses_summary": weaknesses_summary,
         "user_id": user_id,
     })
 

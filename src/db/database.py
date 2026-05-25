@@ -123,6 +123,8 @@ CREATE TABLE IF NOT EXISTS user_profiles (
     preferred_tone      TEXT,                         -- encouraging | strict | academic
     academic_background TEXT,                         -- e.g., '컴퓨터공학과 학부생'
     notes               TEXT,                         -- AI notes on user style/preferences
+    strengths_summary   TEXT NOT NULL DEFAULT '',     -- dynamic paragraph summarizing user strengths
+    weaknesses_summary  TEXT NOT NULL DEFAULT '',     -- dynamic paragraph summarizing user weaknesses
     updated_at          TEXT NOT NULL
 );
 
@@ -151,11 +153,19 @@ def init_db() -> None:
         if "user_id" not in columns:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'")
             
+    # Migration: Add strengths_summary and weaknesses_summary to user_profiles if missing
+    cursor = conn.execute("PRAGMA table_info(user_profiles)")
+    columns = [row["name"] for row in cursor.fetchall()]
+    if "strengths_summary" not in columns:
+        conn.execute("ALTER TABLE user_profiles ADD COLUMN strengths_summary TEXT NOT NULL DEFAULT ''")
+    if "weaknesses_summary" not in columns:
+        conn.execute("ALTER TABLE user_profiles ADD COLUMN weaknesses_summary TEXT NOT NULL DEFAULT ''")
+
     # Seed default user profile
     now = _now()
     conn.execute(
-        "INSERT OR IGNORE INTO user_profiles (user_id, learning_style, preferred_tone, academic_background, notes, updated_at) "
-        "VALUES ('default', 'conceptual', 'encouraging', '대학원생', '소크라테스식 학습 진행 중', ?)",
+        "INSERT OR IGNORE INTO user_profiles (user_id, learning_style, preferred_tone, academic_background, notes, strengths_summary, weaknesses_summary, updated_at) "
+        "VALUES ('default', 'conceptual', 'encouraging', '대학원생', '소크라테스식 학습 진행 중', '', '', ?)",
         (now,)
     )
     conn.commit()
@@ -479,6 +489,8 @@ def get_user_profile(user_id: str = "default") -> Dict[str, Any]:
         "preferred_tone": "encouraging",
         "academic_background": "대학원생",
         "notes": "소크라테스식 학습 진행 중",
+        "strengths_summary": "",
+        "weaknesses_summary": "",
     }
 
 
@@ -488,6 +500,8 @@ def save_user_profile(
     preferred_tone: Optional[str] = None,
     academic_background: Optional[str] = None,
     notes: Optional[str] = None,
+    strengths_summary: Optional[str] = None,
+    weaknesses_summary: Optional[str] = None,
 ) -> None:
     """Save or update the user's personalization profile."""
     now = _now()
@@ -511,20 +525,28 @@ def save_user_profile(
         if notes is not None:
             query += ", notes = ?"
             params.append(notes)
+        if strengths_summary is not None:
+            query += ", strengths_summary = ?"
+            params.append(strengths_summary)
+        if weaknesses_summary is not None:
+            query += ", weaknesses_summary = ?"
+            params.append(weaknesses_summary)
         query += " WHERE user_id = ?"
         params.append(user_id)
         conn.execute(query, params)
     else:
         # Insert new
         conn.execute(
-            "INSERT INTO user_profiles (user_id, learning_style, preferred_tone, academic_background, notes, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO user_profiles (user_id, learning_style, preferred_tone, academic_background, notes, strengths_summary, weaknesses_summary, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 user_id,
                 learning_style or "conceptual",
                 preferred_tone or "encouraging",
                 academic_background or "대학원생",
                 notes or "",
+                strengths_summary or "",
+                weaknesses_summary or "",
                 now,
             ),
         )

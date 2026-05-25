@@ -28,10 +28,10 @@ Personalization Guidelines:
 2. Preferred Tone: If '{preferred_tone}' is 'encouraging' (격려형), use a warm, empathetic tone with compliments. If 'strict' (엄격형), focus strictly on factual details and challenge assumptions without soft padding. If 'academic' (학구형), use formal graduate-level research vocabulary.
 3. Academic Background: The student is a '{academic_background}'. Tailor your explanations and analogies to match their background knowledge.
 4. AI Notes on Student: {profile_notes}
-5. Leverage Strengths: If possible, draw analogies using concepts the student is strong in:
-{strengths_text}
-6. Address Weaknesses: Pay extra attention to concepts the student has struggled with in the past:
-{weaknesses_text}
+5. Leverage Strengths: If possible, draw analogies using concepts the student is strong in.
+Active Strengths Summary: "{strengths_summary}"
+6. Address Weaknesses: Pay extra attention to concepts the student has struggled with in the past.
+Active Weaknesses Summary: "{weaknesses_summary}"
 
 Socratic depth: {depth} (0=Light 1-2 turns, 1=Standard 3-4 turns, 2=Deep 5+ turns)
 Frustration level: {frustration_level}
@@ -71,38 +71,25 @@ def socratic_dialogue_agent(state: AgentState) -> AgentState:
         except Exception as e:
             logger.warning(f"Failed to fetch session details: {e}")
 
-    # Fetch user unresolved weaknesses
-    weaknesses_text = "No unresolved weaknesses recorded yet."
-    try:
-        from src.db.database import get_user_unresolved_weaknesses
-        unresolved_weaknesses = get_user_unresolved_weaknesses(user_id, limit=5)
-        if unresolved_weaknesses:
-            weaknesses_text = "\n".join(
-                f"- {w['concept']}: {w['details']} (severity: {w['severity']})"
-                for w in unresolved_weaknesses
-            )
-    except Exception as e:
-        logger.warning(f"Failed to fetch user weaknesses: {e}")
-
-    # Fetch user strengths
-    strengths_text = "No recorded strengths yet."
-    try:
-        from src.db.database import get_user_strengths
-        user_strengths = get_user_strengths(user_id, limit=5)
-        if user_strengths:
-            strengths_text = "\n".join(
-                f"- {s['concept']}: {s['details']}"
-                for s in user_strengths
-            )
-    except Exception as e:
-        logger.warning(f"Failed to fetch user strengths: {e}")
-
-    # Load user profile preferences
+    # Load user profile preferences and summaries
     user_profile = state.get("user_profile", {})
+    if not user_profile:
+        try:
+            from src.db.database import get_user_profile
+            user_profile = get_user_profile(user_id)
+        except Exception:
+            user_profile = {}
+
     learning_style = user_profile.get("learning_style", "conceptual")
     preferred_tone = user_profile.get("preferred_tone", "encouraging")
     academic_background = user_profile.get("academic_background", "대학원생")
     profile_notes = user_profile.get("notes", "None")
+    strengths_summary = user_profile.get("strengths_summary", "")
+    if not strengths_summary:
+        strengths_summary = "No recorded strengths yet."
+    weaknesses_summary = user_profile.get("weaknesses_summary", "")
+    if not weaknesses_summary:
+        weaknesses_summary = "No unresolved weaknesses recorded yet."
 
     context = "\n".join(d["text"] for d in docs) if docs else "No lecture materials found."
     last_msg = history[-1]["content"] if history else ""
@@ -128,8 +115,8 @@ def socratic_dialogue_agent(state: AgentState) -> AgentState:
         preferred_tone=preferred_tone,
         academic_background=academic_background,
         profile_notes=profile_notes,
-        strengths_text=strengths_text,
-        weaknesses_text=weaknesses_text,
+        strengths_summary=strengths_summary,
+        weaknesses_summary=weaknesses_summary,
         context=context,
         history=history_text,
     )
