@@ -211,6 +211,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (data.tool_results.some(r => r.tool === 'schedule_review' && r.ok)) await fetchSchedules();
             }
 
+            // 비동기 백그라운드 진단 결과 반영을 위해 2초 후 추가 갱신
+            setTimeout(async () => {
+                await fetchWeaknesses();
+                await fetchSchedules();
+            }, 2000);
+
 
         } catch (error) {
             console.error(error);
@@ -462,6 +468,8 @@ document.addEventListener('DOMContentLoaded', () => {
         updateFrustrationUI(0);
         currentPlan.innerHTML = '<div class="plan-empty"><p>질문하면 AI가<br>학습 계획을 세웁니다</p></div>';
         loadSessions();
+        fetchWeaknesses();
+        fetchSchedules();
     });
 
     // Fetch and render registered PDF documents
@@ -697,6 +705,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             statTurns.innerText = turnCount;
             await loadSessions();
+            await fetchWeaknesses();
+            await fetchSchedules();
         } catch (e) {
             console.error('Failed to load session:', e);
         }

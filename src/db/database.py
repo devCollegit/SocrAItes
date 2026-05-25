@@ -77,6 +77,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 -- 3. Weaknesses: concepts the learner found difficult.
 CREATE TABLE IF NOT EXISTS weaknesses (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     TEXT    NOT NULL DEFAULT 'default',
     session_id  TEXT    REFERENCES sessions(id) ON DELETE SET NULL,
     concept     TEXT    NOT NULL,
     details     TEXT,
@@ -114,6 +115,27 @@ CREATE TABLE IF NOT EXISTS reports (
     body        TEXT    NOT NULL,             -- markdown or plain text
     created_at  TEXT    NOT NULL
 );
+
+-- 7. User Profiles: stores learning preferences and style.
+CREATE TABLE IF NOT EXISTS user_profiles (
+    user_id             TEXT PRIMARY KEY,
+    learning_style      TEXT,                         -- conceptual | practical | concise
+    preferred_tone      TEXT,                         -- encouraging | strict | academic
+    academic_background TEXT,                         -- e.g., '컴퓨터공학과 학부생'
+    notes               TEXT,                         -- AI notes on user style/preferences
+    updated_at          TEXT NOT NULL
+);
+
+-- 8. Strengths: concepts the learner demonstrated mastery on.
+CREATE TABLE IF NOT EXISTS strengths (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id     TEXT    NOT NULL DEFAULT 'default',
+    session_id  TEXT    REFERENCES sessions(id) ON DELETE SET NULL,
+    concept     TEXT    NOT NULL,
+    details     TEXT,
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL
+);
 """
 
 
@@ -121,6 +143,21 @@ def init_db() -> None:
     """Create all tables if they do not already exist."""
     conn = get_connection()
     conn.executescript(_SCHEMA_SQL)
+    
+    # Migration: Add user_id column to weaknesses and strengths if missing
+    for table in ["weaknesses", "strengths"]:
+        cursor = conn.execute(f"PRAGMA table_info({table})")
+        columns = [row["name"] for row in cursor.fetchall()]
+        if "user_id" not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN user_id TEXT NOT NULL DEFAULT 'default'")
+            
+    # Seed default user profile
+    now = _now()
+    conn.execute(
+        "INSERT OR IGNORE INTO user_profiles (user_id, learning_style, preferred_tone, academic_background, notes, updated_at) "
+        "VALUES ('default', 'conceptual', 'encouraging', '대학원생', '소크라테스식 학습 진행 중', ?)",
+        (now,)
+    )
     conn.commit()
     conn.close()
 
@@ -238,14 +275,15 @@ def save_weakness(
     details: Optional[str] = None,
     severity: int = 1,
     session_id: Optional[str] = None,
+    user_id: str = "default",
 ) -> int:
     """Persist a weakness record and return its row id."""
     now = _now()
     conn = get_connection()
     cur = conn.execute(
-        "INSERT INTO weaknesses (session_id, concept, details, severity, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (session_id, concept, details, severity, now, now),
+        "INSERT INTO weaknesses (session_id, concept, details, severity, created_at, updated_at, user_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (session_id, concept, details, severity, now, now, user_id),
     )
     row_id = cur.lastrowid
     conn.commit()
@@ -288,6 +326,24 @@ def get_weaknesses(
     query += " ORDER BY created_at DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(query, params).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_user_unresolved_weaknesses(
+    user_id: str = "default",
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    """Return unresolved weaknesses for a specific user, joining with sessions."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT w.id, w.session_id, w.concept, w.details, w.severity, w.created_at "
+        "FROM weaknesses w "
+        "LEFT JOIN sessions s ON w.session_id = s.id "
+        "WHERE w.user_id = ? AND w.resolved = 0 "
+        "ORDER BY w.created_at DESC LIMIT ?",
+        (user_id, limit),
+    ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -403,6 +459,108 @@ def get_reports(user_id: str = "default", limit: int = 10) -> List[Dict[str, Any
     conn = get_connection()
     rows = conn.execute(
         "SELECT * FROM reports WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+        (user_id, limit),
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_user_profile(user_id: str = "default") -> Dict[str, Any]:
+    """Retrieve the user profile, or return seeded defaults if not present."""
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM user_profiles WHERE user_id = ?", (user_id,)).fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    # Default fallback
+    return {
+        "user_id": user_id,
+        "learning_style": "conceptual",
+        "preferred_tone": "encouraging",
+        "academic_background": "대학원생",
+        "notes": "소크라테스식 학습 진행 중",
+    }
+
+
+def save_user_profile(
+    user_id: str,
+    learning_style: Optional[str] = None,
+    preferred_tone: Optional[str] = None,
+    academic_background: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> None:
+    """Save or update the user's personalization profile."""
+    now = _now()
+    conn = get_connection()
+    
+    # Check if profile exists
+    row = conn.execute("SELECT 1 FROM user_profiles WHERE user_id = ?", (user_id,)).fetchone()
+    if row:
+        # Update existing
+        query = "UPDATE user_profiles SET updated_at = ?"
+        params = [now]
+        if learning_style is not None:
+            query += ", learning_style = ?"
+            params.append(learning_style)
+        if preferred_tone is not None:
+            query += ", preferred_tone = ?"
+            params.append(preferred_tone)
+        if academic_background is not None:
+            query += ", academic_background = ?"
+            params.append(academic_background)
+        if notes is not None:
+            query += ", notes = ?"
+            params.append(notes)
+        query += " WHERE user_id = ?"
+        params.append(user_id)
+        conn.execute(query, params)
+    else:
+        # Insert new
+        conn.execute(
+            "INSERT INTO user_profiles (user_id, learning_style, preferred_tone, academic_background, notes, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                user_id,
+                learning_style or "conceptual",
+                preferred_tone or "encouraging",
+                academic_background or "대학원생",
+                notes or "",
+                now,
+            ),
+        )
+    conn.commit()
+    conn.close()
+
+
+def save_strength(
+    concept: str,
+    details: Optional[str] = None,
+    session_id: Optional[str] = None,
+    user_id: str = "default",
+) -> int:
+    """Persist a strength record and return its row id."""
+    now = _now()
+    conn = get_connection()
+    cur = conn.execute(
+        "INSERT INTO strengths (session_id, concept, details, created_at, updated_at, user_id) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (session_id, concept, details, now, now, user_id),
+    )
+    row_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    return row_id
+
+
+def get_user_strengths(user_id: str = "default", limit: int = 10) -> List[Dict[str, Any]]:
+    """Return strengths for a specific user, joining with sessions."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT str.id, str.session_id, str.concept, str.details, str.created_at "
+        "FROM strengths str "
+        "LEFT JOIN sessions s ON str.session_id = s.id "
+        "WHERE str.user_id = ? "
+        "ORDER BY str.created_at DESC LIMIT ?",
         (user_id, limit),
     ).fetchall()
     conn.close()

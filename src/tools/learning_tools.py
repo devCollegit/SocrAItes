@@ -34,6 +34,7 @@ class QuizRequest(BaseModel):
 
     topic: str = Field(..., description="Concept or keyword for the quiz")
     num_questions: int = Field(5, ge=1, le=20, description="Number of quiz questions")
+    session_id: str | None = Field(None, description="Optional session ID to track history")
 
 class ScheduleRequest(BaseModel):
     """Parameters for ``schedule_review`` tool.
@@ -57,6 +58,7 @@ class WeaknessRecord(BaseModel):
     details: str = Field("학습 중 이해가 어려운 개념으로 식별됨", description="Additional details about the weakness")
     severity: int = Field(2, ge=1, le=5, description="Weakness severity (1-5)")
     session_id: str | None = Field(None, description="Optional session ID")
+    user_id: str | None = Field("default", description="Optional user ID")
 
 class EscapeResponse(BaseModel):
     """Parameters for ``escape_to_answer`` tool.
@@ -67,6 +69,23 @@ class EscapeResponse(BaseModel):
 
     question: str = Field(..., description="Original user question")
     answer: str | None = Field(None, description="Optional direct answer to give")
+
+
+class UserProfileRequest(BaseModel):
+    """Parameters for ``update_user_profile`` tool."""
+    learning_style: str | None = Field(None, description="User's preferred learning style: 'conceptual' (이론적), 'practical' (실전/사례), 'concise' (간결)")
+    preferred_tone: str | None = Field(None, description="User's preferred tone: 'encouraging' (격려형), 'strict' (엄격형), 'academic' (학구형)")
+    academic_background: str | None = Field(None, description="User's academic background or major")
+    notes: str | None = Field(None, description="Summarized notes/observations about the user's behavior or preferences")
+    user_id: str | None = Field("default", description="Optional user ID")
+
+
+class StrengthRecord(BaseModel):
+    """Parameters for ``save_strength`` tool."""
+    concept: str = Field(..., description="Concept the user is strong on. Infer from conversation context.")
+    details: str = Field("학습 중 개념 이해도가 높은 것으로 식별됨", description="Additional details about the strength")
+    session_id: str | None = Field(None, description="Optional session ID")
+    user_id: str | None = Field("default", description="Optional user ID")
 
 # ---------------------------------------------------------------------------
 # Stub implementations – they simply log and return a placeholder value.
@@ -201,7 +220,30 @@ def generate_quiz(request: Dict[str, Any]) -> Dict[str, Any]:
     3. Falls back to static templates if LLM/ES is unavailable.
     """
     req = QuizRequest(**request)
-    logger.info("generate_quiz called: topic=%s, n=%d", req.topic, req.num_questions)
+    logger.info("generate_quiz called: topic=%s, n=%d, session_id=%s", req.topic, req.num_questions, req.session_id)
+
+    # 1. Fetch previous quizzes from database to avoid duplicates
+    previous_quizzes_context = ""
+    if req.session_id:
+        try:
+            from src.db.database import get_messages
+            db_messages = get_messages(req.session_id, limit=30)
+            prev_questions = []
+            for db_msg in db_messages:
+                if db_msg["role"] == "assistant":
+                    content = db_msg["content"]
+                    # Extract questions matching common formats like "1. [Question]"
+                    questions_in_msg = re.findall(r"\b\d+\.\s*(.+)", content)
+                    for q in questions_in_msg:
+                        clean_q = q.strip()
+                        if "답안은" not in clean_q and "예:" not in clean_q and len(clean_q) > 5:
+                            prev_questions.append(clean_q)
+            
+            if prev_questions:
+                previous_quizzes_context = "\n".join(f"- {q}" for q in prev_questions)
+                logger.info("Found %d previous quiz questions in session: %s", len(prev_questions), req.session_id)
+        except Exception as e:
+            logger.warning("Failed to retrieve quiz history from database: %s", e)
 
     context = _retrieve_context_for_quiz(req.topic)
     quiz_items = None
@@ -211,11 +253,21 @@ def generate_quiz(request: Dict[str, Any]) -> Dict[str, Any]:
             from langchain_openai import ChatOpenAI
             from langchain_core.messages import HumanMessage
             gen_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7)
+            
+            # Incorporate previous quiz history into the prompt
+            history_prompt = ""
+            if previous_quizzes_context:
+                history_prompt = (
+                    "\n\n이전에 이미 출제된 퀴즈 질문 목록입니다. 아래 질문들과 완전히 동일하거나 중복되거나 거의 유사한 문제는 절대로 출제하지 마십시오:\n"
+                    f"{previous_quizzes_context}\n"
+                )
+
             prompt = _QUIZ_GENERATION_PROMPT.format(
                 n=req.num_questions,
                 topic=req.topic,
                 context=context[:4000],  # stay within token limits
-            )
+            ) + history_prompt
+            
             response = gen_llm.invoke([HumanMessage(content=prompt)])
             raw = response.content if hasattr(response, "content") else str(response)
             quiz_items = _parse_quiz_json(raw)
@@ -280,6 +332,7 @@ def save_weakness(request: Dict[str, Any]) -> Dict[str, Any]:
         details=req.details,
         severity=req.severity,
         session_id=req.session_id,
+        user_id=req.user_id or "default",
     )
     return {
         "status": "saved",
@@ -315,12 +368,86 @@ def _tool_save_weakness(
     details: str,
     severity: int = 2,
     session_id: str | None = None,
+    user_id: str | None = "default",
 ) -> Dict[str, Any]:
-    return save_weakness({"concept": concept, "details": details, "severity": severity, "session_id": session_id})
+    return save_weakness({"concept": concept, "details": details, "severity": severity, "session_id": session_id, "user_id": user_id})
 
 
 def _tool_escape_to_answer(question: str, answer: str | None = None) -> Dict[str, Any]:
     return escape_to_answer({"question": question, "answer": answer})
+
+
+def update_user_profile(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist updates to the user profile."""
+    req = UserProfileRequest(**request)
+    user_id = req.user_id or "default"
+    logger.info("update_user_profile called for user=%s: %s", user_id, req)
+    from src.db.database import save_user_profile
+    save_user_profile(
+        user_id=user_id,
+        learning_style=req.learning_style,
+        preferred_tone=req.preferred_tone,
+        academic_background=req.academic_background,
+        notes=req.notes,
+    )
+    return {
+        "status": "updated",
+        "user_id": user_id,
+        "profile": {
+            "learning_style": req.learning_style,
+            "preferred_tone": req.preferred_tone,
+            "academic_background": req.academic_background,
+            "notes": req.notes,
+        }
+    }
+
+
+def save_strength(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Persist a strength record."""
+    req = StrengthRecord(**request)
+    logger.info("save_strength called with %s", req)
+    from src.db.database import save_strength as db_save_strength
+    strength_id = db_save_strength(
+        concept=req.concept,
+        details=req.details,
+        session_id=req.session_id,
+        user_id=req.user_id or "default",
+    )
+    return {
+        "status": "saved",
+        "strength_id": strength_id,
+        "concept": req.concept,
+    }
+
+
+def _tool_update_user_profile(
+    learning_style: str | None = None,
+    preferred_tone: str | None = None,
+    academic_background: str | None = None,
+    notes: str | None = None,
+    user_id: str = "default",
+) -> Dict[str, Any]:
+    return update_user_profile({
+        "learning_style": learning_style,
+        "preferred_tone": preferred_tone,
+        "academic_background": academic_background,
+        "notes": notes,
+        "user_id": user_id,
+    })
+
+
+def _tool_save_strength(
+    concept: str,
+    details: str = "학습 중 개념 이해도가 높은 것으로 식별됨",
+    session_id: str | None = None,
+    user_id: str | None = "default",
+) -> Dict[str, Any]:
+    return save_strength({
+        "concept": concept,
+        "details": details,
+        "session_id": session_id,
+        "user_id": user_id,
+    })
 
 # Export a mapping for LangChain function calling registration.
 TOOL_MAP = {
@@ -328,6 +455,8 @@ TOOL_MAP = {
     "schedule_review": schedule_review,
     "save_weakness": save_weakness,
     "escape_to_answer": escape_to_answer,
+    "update_user_profile": update_user_profile,
+    "save_strength": save_strength,
 }
 
 
@@ -351,5 +480,15 @@ LANGCHAIN_TOOLS: List[StructuredTool] = [
         name="escape_to_answer",
         description="Switch to direct-answer mode for the current question.",
         func=_tool_escape_to_answer,
+    ),
+    StructuredTool.from_function(
+        name="update_user_profile",
+        description="Update user's profile, preferred learning style, tone, academic background, or notes.",
+        func=_tool_update_user_profile,
+    ),
+    StructuredTool.from_function(
+        name="save_strength",
+        description="Save a strong concept that the user has shown good understanding of.",
+        func=_tool_save_strength,
     ),
 ]

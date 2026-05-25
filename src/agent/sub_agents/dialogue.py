@@ -12,12 +12,26 @@ logger = logging.getLogger("SocrAItes.Agent")
 
 SOCRATIC_DIALOGUE_PROMPT = """You are SocrAItes, a world-class Socratic tutor.
 
-Your task: Generate a Socratic response that guides the student to think critically.
+Your task: Generate a Socratic response in Korean that guides the student to think critically.
 - Do NOT give direct answers. Provide a brief hint or high-level context (1-2 sentences), then ask a concrete, thought-provoking Socratic question.
 - Exception: If the student requested a summary, provide a comprehensive structured summary followed by a Socratic question.
 - If frustration_level >= 2, offer more scaffolding (a more detailed hint) before asking the question.
 - Ask about specific sub-components, mechanisms, or key distinctions — never vague opinion questions.
-- Respond naturally in Korean.
+
+Progressive Learning & Context Progression (MANDATORY):
+- Carefully analyze the conversation history. If a sub-concept (e.g., stemming vs lemmatization) has already been discussed or explained by the student (normally 2-3 turns or once they've correctly stated the definition/difference), DO NOT keep drilling on that same topic.
+- Instead, actively bridge to the next logical concept present in the Lecture Context (e.g., stop words removal, normalization, tokenization, or the next phase of parsing).
+- Avoid loop questions. If the student answers your question reasonably well, acknowledge their correct understanding briefly (with positive reinforcement), and then introduce the next topic or challenge.
+
+Personalization Guidelines:
+1. Learning Style: If '{learning_style}' is 'practical' (실전/사례), use real-world software examples and case studies. If 'conceptual' (이론적), focus on theoretical and mathematical foundations. If 'concise' (간결), keep explanations extremely brief.
+2. Preferred Tone: If '{preferred_tone}' is 'encouraging' (격려형), use a warm, empathetic tone with compliments. If 'strict' (엄격형), focus strictly on factual details and challenge assumptions without soft padding. If 'academic' (학구형), use formal graduate-level research vocabulary.
+3. Academic Background: The student is a '{academic_background}'. Tailor your explanations and analogies to match their background knowledge.
+4. AI Notes on Student: {profile_notes}
+5. Leverage Strengths: If possible, draw analogies using concepts the student is strong in:
+{strengths_text}
+6. Address Weaknesses: Pay extra attention to concepts the student has struggled with in the past:
+{weaknesses_text}
 
 Socratic depth: {depth} (0=Light 1-2 turns, 1=Standard 3-4 turns, 2=Deep 5+ turns)
 Frustration level: {frustration_level}
@@ -46,6 +60,50 @@ def socratic_dialogue_agent(state: AgentState) -> AgentState:
     frustration_level = state.get("frustration_level", 0)
     eval_feedback = state.get("evaluation", {}).get("feedback", "")
 
+    session_id = state.get("session_id")
+    user_id = "default"
+    if session_id:
+        try:
+            from src.db.database import get_session
+            sess = get_session(session_id)
+            if sess:
+                user_id = sess.get("user_id", "default")
+        except Exception as e:
+            logger.warning(f"Failed to fetch session details: {e}")
+
+    # Fetch user unresolved weaknesses
+    weaknesses_text = "No unresolved weaknesses recorded yet."
+    try:
+        from src.db.database import get_user_unresolved_weaknesses
+        unresolved_weaknesses = get_user_unresolved_weaknesses(user_id, limit=5)
+        if unresolved_weaknesses:
+            weaknesses_text = "\n".join(
+                f"- {w['concept']}: {w['details']} (severity: {w['severity']})"
+                for w in unresolved_weaknesses
+            )
+    except Exception as e:
+        logger.warning(f"Failed to fetch user weaknesses: {e}")
+
+    # Fetch user strengths
+    strengths_text = "No recorded strengths yet."
+    try:
+        from src.db.database import get_user_strengths
+        user_strengths = get_user_strengths(user_id, limit=5)
+        if user_strengths:
+            strengths_text = "\n".join(
+                f"- {s['concept']}: {s['details']}"
+                for s in user_strengths
+            )
+    except Exception as e:
+        logger.warning(f"Failed to fetch user strengths: {e}")
+
+    # Load user profile preferences
+    user_profile = state.get("user_profile", {})
+    learning_style = user_profile.get("learning_style", "conceptual")
+    preferred_tone = user_profile.get("preferred_tone", "encouraging")
+    academic_background = user_profile.get("academic_background", "대학원생")
+    profile_notes = user_profile.get("notes", "None")
+
     context = "\n".join(d["text"] for d in docs) if docs else "No lecture materials found."
     last_msg = history[-1]["content"] if history else ""
 
@@ -66,6 +124,12 @@ def socratic_dialogue_agent(state: AgentState) -> AgentState:
         depth=depth,
         frustration_level=frustration_level,
         eval_feedback=eval_feedback,
+        learning_style=learning_style,
+        preferred_tone=preferred_tone,
+        academic_background=academic_background,
+        profile_notes=profile_notes,
+        strengths_text=strengths_text,
+        weaknesses_text=weaknesses_text,
         context=context,
         history=history_text,
     )
