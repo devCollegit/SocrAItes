@@ -120,17 +120,18 @@ Source material (use this as the primary basis; additional knowledge is fine):
 ---
 
 Requirements:
-1. Each question MUST have exactly 4 options labeled A, B, C, D.
-2. Exactly ONE option must be the correct answer; the other three must be plausible distractors.
-3. Vary question difficulty (concept recall, applied reasoning, edge cases).
-4. All text must be in Korean.
-5. Do NOT add any explanation text outside the JSON block.
+1. Each question MUST have exactly 4 options.
+2. Options should be provided WITHOUT letter prefixes (no "A.", "B.", etc. - just the content).
+3. Exactly ONE option must be the correct answer; the other three must be plausible distractors.
+4. Vary question difficulty (concept recall, applied reasoning, edge cases).
+5. All text must be in Korean.
+6. Do NOT add any explanation text outside the JSON block.
 
 Return ONLY a valid JSON array with this schema (no markdown fences):
 [
   {{
     "question": "질문 내용",
-    "options": ["A 보기", "B 보기", "C 보기", "D 보기"],
+    "options": ["선택지 내용 (문자 없음)", "선택지 내용 (문자 없음)", "선택지 내용 (문자 없음)", "선택지 내용 (문자 없음)"],
     "answer": "A"
   }},
   ...
@@ -139,7 +140,10 @@ Return ONLY a valid JSON array with this schema (no markdown fences):
 
 
 def _parse_quiz_json(raw: str) -> list | None:
-    """Extract and parse a JSON array from raw LLM output."""
+    """Extract and parse a JSON array from raw LLM output.
+    
+    Also cleans up option text by removing letter prefixes (A., B., etc.)
+    """
     # Strip markdown fences if present
     raw = re.sub(r"```(?:json)?", "", raw).strip()
     # Find the first [...] block
@@ -149,6 +153,16 @@ def _parse_quiz_json(raw: str) -> list | None:
     try:
         items = json.loads(match.group(0))
         if isinstance(items, list) and items:
+            # Clean up options: remove "A.", "B.", "C.", "D." prefixes if present
+            for item in items:
+                if "options" in item and isinstance(item["options"], list):
+                    cleaned_options = []
+                    for opt in item["options"]:
+                        # Remove leading "A. ", "B. ", etc.
+                        opt_str = str(opt).strip()
+                        cleaned = re.sub(r"^[A-D]\.\s*", "", opt_str)
+                        cleaned_options.append(cleaned)
+                    item["options"] = cleaned_options
             return items
     except json.JSONDecodeError:
         pass
@@ -363,6 +377,51 @@ def escape_to_answer(request: Dict[str, Any]) -> Dict[str, Any]:
         "message": "User requested direct answer mode.",
     }
     _log_tool_trace("escape_to_answer", request, res)
+    return res
+
+
+def grade_quiz(quiz_items: List[Dict[str, Any]], user_answers: Dict[int, str]) -> Dict[str, Any]:
+    """Auto-grade a quiz.
+    
+    Args:
+        quiz_items: List of quiz questions with 'answer' field (e.g. [{"question": "...", "answer": "A"}, ...])
+        user_answers: Dict mapping question index to user's answer letter (e.g. {0: "A", 1: "B", ...})
+    
+    Returns:
+        Dict with score, feedback, and results.
+    """
+    if not quiz_items:
+        return {"score": 0, "correct": 0, "total": 0, "message": "퀴즈 데이터 오류"}
+    
+    correct = 0
+    feedback_details = []
+    
+    for i, quiz_item in enumerate(quiz_items):
+        correct_answer = quiz_item.get("answer", "").upper()
+        user_answer = str(user_answers.get(i, "")).upper() if i in user_answers else ""
+        
+        is_correct = user_answer == correct_answer
+        if is_correct:
+            correct += 1
+            feedback_details.append(f"✅ {i+1}번: 정답")
+        else:
+            feedback_details.append(f"❌ {i+1}번: 오답 (정답: {correct_answer})")
+        
+        logger.info("Quiz Q%d: correct=%s, user=%s, match=%s", i+1, correct_answer, user_answer, is_correct)
+    
+    score = (correct / len(quiz_items)) * 100
+    message = f"✅ {correct}/{len(quiz_items)} 정답입니다! 점수: {int(score)}점\n" + "\n".join(feedback_details)
+    
+    res = {
+        "score": int(score),
+        "correct": correct,
+        "total": len(quiz_items),
+        "message": message,
+        "details": feedback_details,
+        "suggest_weakness": score < 60,  # 60점 미만이면 약점 제안
+    }
+    
+    logger.info("Quiz grading: score=%d%%, correct=%d/%d, suggest_weakness=%s", score, correct, len(quiz_items), score < 60)
     return res
 
 

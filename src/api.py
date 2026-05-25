@@ -360,6 +360,60 @@ async def remove_schedule(schedule_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/submit_quiz")
+async def submit_quiz(payload: dict):
+    """퀴즈 답안 제출 및 자동 채점.
+    
+    요청:
+    {
+        "quiz_items": [
+            {"question": "...", "options": [...], "answer": "A"},
+            ...
+        ],
+        "user_answers": {
+            "0": "A",
+            "1": "B",
+            ...
+        }
+    }
+    
+    응답:
+    {
+        "score": 80,
+        "correct": 4,
+        "total": 5,
+        "message": "✅ 4/5 정답입니다! 점수: 80점\n✅ 1번: 정답\n✅ 2번: 정답\n...",
+        "details": ["✅ 1번: 정답", ...],
+        "suggest_weakness": False
+    }
+    """
+    try:
+        from src.tools.learning_tools import grade_quiz
+        
+        quiz_items = payload.get("quiz_items", [])
+        user_answers_raw = payload.get("user_answers", {})
+        
+        # Convert user_answers keys to int ("0" -> 0)
+        user_answers = {}
+        for key, val in user_answers_raw.items():
+            try:
+                user_answers[int(key)] = val.upper()
+            except (ValueError, AttributeError):
+                pass
+        
+        logger.info(f"[/submit_quiz] Grading {len(quiz_items)} questions, {len(user_answers)} answers")
+        
+        result = grade_quiz(quiz_items, user_answers)
+        
+        logger.info(f"[/submit_quiz] Result: score={result.get('score')}, suggest_weakness={result.get('suggest_weakness')}")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"[/submit_quiz] Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}

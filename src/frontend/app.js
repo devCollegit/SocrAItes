@@ -21,6 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const registeredDocsList = document.getElementById('registered-docs-list');
     const sessionList = document.getElementById('session-list');
     const scheduleList = document.getElementById('schedule-list');
+    const weaknessesList = document.getElementById('weaknesses-list');
 
     // State
     let messages = [];
@@ -190,6 +191,11 @@ document.addEventListener('DOMContentLoaded', () => {
             removeLoadingIndicator(loadingId);
             addMessage(data.answer, 'ai', data.retrieved_docs);
 
+            // Render Quiz UI if quiz_data exists
+            if (data.quiz_data && Array.isArray(data.quiz_data)) {
+                renderQuizUI(data.quiz_data);
+            }
+
             // Update Plan
             if (data.plan) {
                 currentPlan.innerHTML = `<div class="plan-content">${marked.parse(data.plan)}</div>`;
@@ -207,11 +213,13 @@ document.addEventListener('DOMContentLoaded', () => {
             await loadSessions();
             if (data.tool_results && data.tool_results.length > 0) {
                 if (data.tool_results.some(r => r.tool === 'schedule_review' && r.ok)) await fetchSchedules();
+                if (data.tool_results.some(r => r.tool === 'save_weakness' && r.ok)) await fetchWeaknesses();
             }
 
             // 비동기 백그라운드 진단 결과 반영을 위해 2초 후 추가 갱신
             setTimeout(async () => {
                 await fetchSchedules();
+                await fetchWeaknesses();
             }, 2000);
 
 
@@ -466,6 +474,7 @@ document.addEventListener('DOMContentLoaded', () => {
         currentPlan.innerHTML = '<div class="plan-empty"><p>질문하면 AI가<br>학습 계획을 세웁니다</p></div>';
         loadSessions();
         fetchSchedules();
+        fetchWeaknesses();
     });
 
     // Fetch and render registered PDF documents
@@ -574,9 +583,65 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Fetch and render weaknesses
+    async function fetchWeaknesses() {
+        try {
+            const response = await fetch('/weaknesses');
+            if (!response.ok) throw new Error('Failed to fetch weaknesses');
+            const data = await response.json();
+            const items = data.weaknesses || [];
+
+            if (items.length === 0) {
+                weaknessesList.innerHTML = '<div class="weakness-empty">등록된 약점 없음</div>';
+                return;
+            }
+
+            weaknessesList.innerHTML = items.map(w => {
+                const sevClass = w.severity <= 2 ? 'sev-low' : w.severity <= 3 ? 'sev-mid' : 'sev-high';
+                const sevLabel = ['', '낮음', '낮음', '중간', '높음', '매우높음'][w.severity] || '중간';
+                const createdDate = new Date(w.created_at).toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' });
+                return `
+                    <div class="weakness-item" data-id="${w.id}">
+                        <div class="weakness-item-body">
+                            <span class="weakness-concept" title="${w.concept}">${w.concept}</span>
+                            <span class="weakness-sev ${sevClass}">${sevLabel}</span>
+                        </div>
+                        <button class="weakness-delete-btn" data-id="${w.id}" title="삭제">
+                            <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+                        </button>
+                    </div>
+                `;
+            }).join('');
+
+            weaknessesList.querySelectorAll('.weakness-delete-btn').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const id = parseInt(btn.dataset.id);
+                    await fetch(`/weaknesses/${id}`, { method: 'DELETE' });
+                    await fetchWeaknesses();
+                    await fetchSchedules();
+                });
+            });
+
+            // Add click to view details
+            weaknessesList.querySelectorAll('.weakness-item').forEach(item => {
+                item.addEventListener('click', (e) => {
+                    if (e.target.closest('.weakness-delete-btn')) return;
+                    const weaknessId = item.dataset.id;
+                    const weakness = items.find(w => w.id == weaknessId);
+                    if (weakness) {
+                        addMessage(`📌 **${weakness.concept}**\n\n심각도: ${['', '⭐', '⭐⭐', '⭐⭐⭐', '⭐⭐⭐⭐', '⭐⭐⭐⭐⭐'][weakness.severity]}\n\n상세: ${weakness.details || '별도 기록 없음'}\n\n등록일: ${new Date(weakness.created_at).toLocaleDateString('ko-KR')}`, 'system');
+                    }
+                });
+            });
+        } catch (error) {
+            console.error('Error fetching weaknesses:', error);
+        }
+    }
+
     // Initial fetch of registered documents
     fetchRegisteredDocuments();
     fetchSchedules();
+    fetchWeaknesses();
 
     // 세션 목록 불러오기
     async function loadSessions() {
@@ -670,5 +735,175 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 페이지 로드 시 세션 목록 표시
     loadSessions();
+
+    // Quiz UI Rendering
+    function renderQuizUI(quizItems) {
+        const quizContainer = document.createElement('div');
+        quizContainer.className = 'quiz-container';
+        quizContainer.innerHTML = `
+            <div class="quiz-header">
+                <h3>📝 문제를 풀어보세요!</h3>
+                <p class="quiz-count">총 ${quizItems.length}문제</p>
+            </div>
+            <div class="quiz-questions" id="quiz-questions"></div>
+            <div class="quiz-actions">
+                <button id="submit-quiz-btn" class="submit-btn">채점하기</button>
+            </div>
+        `;
+
+        const questionsDiv = quizContainer.querySelector('#quiz-questions');
+
+        // Render each question with radio buttons
+        quizItems.forEach((item, idx) => {
+            const questionDiv = document.createElement('div');
+            questionDiv.className = 'quiz-question';
+            questionDiv.innerHTML = `
+                <div class="question-text">
+                    <span class="question-num">${idx + 1}.</span>
+                    <span>${item.question}</span>
+                </div>
+                <div class="question-options">
+                    ${(item.options || []).map((opt, optIdx) => {
+                        const letter = String.fromCharCode(65 + optIdx); // A, B, C, D
+                        const optionId = `q${idx}_${letter}`;
+                        return `
+                            <div class="option">
+                                <input 
+                                    type="radio" 
+                                    id="${optionId}" 
+                                    name="q${idx}" 
+                                    value="${letter}"
+                                    class="option-radio"
+                                >
+                                <label for="${optionId}">
+                                    <span class="option-letter">${letter}</span>
+                                    <span class="option-text">${opt}</span>
+                                </label>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            `;
+            questionsDiv.appendChild(questionDiv);
+        });
+
+        // Submit button event listener
+        const submitBtn = quizContainer.querySelector('#submit-quiz-btn');
+        submitBtn.addEventListener('click', async () => {
+            // Collect answers
+            const userAnswers = {};
+            let answered = 0;
+
+            for (let i = 0; i < quizItems.length; i++) {
+                const radioButtons = document.querySelectorAll(`input[name="q${i}"]`);
+                const selected = Array.from(radioButtons).find(r => r.checked);
+                if (selected) {
+                    userAnswers[i] = selected.value;
+                    answered++;
+                } else {
+                    addMessage(`⚠️ ${i + 1}번 문제를 선택하지 않았습니다.`, 'system');
+                    return;
+                }
+            }
+
+            if (answered !== quizItems.length) {
+                addMessage(`⚠️ 모든 문제를 선택해주세요.`, 'system');
+                return;
+            }
+
+            // Disable button and show loading
+            submitBtn.disabled = true;
+            submitBtn.innerHTML = '채점 중...';
+
+            try {
+                const response = await fetch('/submit_quiz', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        quiz_items: quizItems,
+                        user_answers: userAnswers
+                    })
+                });
+
+                if (!response.ok) {
+                    const err = await response.json();
+                    throw new Error(err.detail || 'Grading failed');
+                }
+
+                const result = await response.json();
+
+                // Display grading result
+                renderGradingResult(result, quizItems, userAnswers);
+
+                // Re-enable button
+                submitBtn.innerHTML = '다시 풀기';
+                submitBtn.disabled = false;
+
+            } catch (error) {
+                console.error('Quiz submission error:', error);
+                addMessage(`❌ 채점 중 오류가 발생했습니다: ${error.message}`, 'system');
+                submitBtn.innerHTML = '채점하기';
+                submitBtn.disabled = false;
+            }
+        });
+
+        // Add quiz container to chat
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'message ai';
+        msgDiv.appendChild(quizContainer);
+        chatMessages.appendChild(msgDiv);
+        scrollToBottom();
+    }
+
+    function renderGradingResult(result, quizItems, userAnswers) {
+        const resultContainer = document.createElement('div');
+        resultContainer.className = 'grading-result';
+
+        const scorePercentage = result.score || 0;
+        const statusEmoji = scorePercentage >= 80 ? '🎉' : scorePercentage >= 60 ? '👍' : '😞';
+
+        resultContainer.innerHTML = `
+            <div class="result-header ${scorePercentage >= 80 ? 'excellent' : scorePercentage >= 60 ? 'good' : 'poor'}">
+                <span class="result-emoji">${statusEmoji}</span>
+                <div class="result-score">
+                    <span class="score-value">${result.score}점</span>
+                    <span class="score-detail">${result.correct}/${result.total} 정답</span>
+                </div>
+            </div>
+            <div class="result-message">${result.message}</div>
+            ${result.suggest_weakness ? '<div class="weakness-suggestion">💡 이 주제를 보충학습으로 등록하시겠어요?</div>' : ''}
+            <div class="result-details">
+                ${result.details.map((detail, idx) => `
+                    <div class="detail-item">
+                        <span>${detail}</span>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+
+        // Add weakness suggestion button if needed
+        if (result.suggest_weakness) {
+            const weaknessBtn = document.createElement('button');
+            weaknessBtn.className = 'weakness-suggestion-btn';
+            weaknessBtn.innerHTML = '약점 등록하기';
+            weaknessBtn.addEventListener('click', () => {
+                userInput.value = '이 주제를 약점으로 등록해줄래?';
+                userInput.dispatchEvent(new Event('input'));
+                sendMessage();
+            });
+            resultContainer.appendChild(weaknessBtn);
+        }
+
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'message ai';
+        msgDiv.appendChild(resultContainer);
+        chatMessages.appendChild(msgDiv);
+        scrollToBottom();
+    }
+
+    function scrollToBottom() {
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
 });
+
 

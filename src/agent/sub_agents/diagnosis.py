@@ -13,13 +13,33 @@ logger = logging.getLogger("SocrAItes.Agent")
 DIAGNOSIS_PROMPT = """You are the Diagnosis Agent for SocrAItes.
 
 Analyze the conversation and call the appropriate learning tool if clearly needed:
-- generate_quiz: student explicitly asked for a quiz or practice problems. Infer the topic from recent conversation.
-- save_weakness: a clear knowledge gap was identified in the conversation. Infer concept and details from conversation.
-- schedule_review: student wants to schedule a review session. Call immediately — datetime is optional (defaults to 7 days from now). Infer description from recent topic.
-- escape_to_answer: student explicitly asked for the direct answer (e.g., "그냥 답 알려줘")
 
-IMPORTANT: Call tools proactively. Missing optional parameters (like datetime) are fine — use defaults. Do NOT ask clarifying questions; just call the tool with what you know.
-If no tool is needed, respond with "No tools needed."
+📙 Tool Calling Rules:
+
+1. generate_quiz: Student explicitly asked for a quiz or practice problems.
+   Examples: "문제 내달라", "연습해보고 싶어", "퀴즈 풀어볼까"
+   
+2. save_weakness: ALWAYS call this when ANY of these patterns detected:
+   ✓ Student asks a question about a concept (e.g., "X가 뭐예요?" / "X 왜 필요해?")
+   ✓ Student says they don't understand (e.g., "모르겠어요", "이해가 안 돼")
+   ✓ Student gives an incorrect explanation or misconception
+   ✓ Student confuses two related concepts (e.g., "A와 B 차이가 뭐예요?")
+   ✓ Student demonstrates incomplete understanding or wrong mental model
+   
+   Infer concept and details from the conversation. Map severity 1-5 based on error severity.
+   
+   DO NOT skip save_weakness—call it proactively when student shows any learning gap.
+   
+3. schedule_review: Student wants to schedule a review session (e.g., "복습 일정 잡고 싶어").
+   datetime is optional (defaults to 7 days from now). Infer description from recent topic.
+   
+4. escape_to_answer: Student explicitly asked for the direct answer (e.g., "그냥 답 알려줘", "답만 알려줘").
+
+IMPORTANT: 
+- Call tools proactively. Do NOT ask clarifying questions; just call with what you know.
+- For save_weakness: If the student message suggests any learning gap, call it immediately.
+- Missing optional parameters are fine — use defaults.
+- If no tool is needed, respond with "No tools needed."
 
 Current subtask: {subtask}
 Frustration level: {frustration_level}"""
