@@ -28,22 +28,26 @@ def _log_trace(
     response: Any = None,
     decision: Any = None,
 ):
-    border = "=" * 80
+    border = "🟢" * 3 + f" [SUB-AGENT: {step.upper()}] " + "🟢" * 3
+    trace_logger.info("\n" + "═" * 80)
     trace_logger.info(border)
-    trace_logger.info(f"NODE: {step.upper()}")
-    trace_logger.info(border)
+    trace_logger.info("═" * 80)
 
     if purpose:
-        trace_logger.info(f"[PURPOSE]\n  {purpose}\n")
+        trace_logger.info(f"🎯 [PURPOSE]\n  {purpose}\n")
 
     if inputs:
-        trace_logger.info("[INPUT CONTEXT]")
+        trace_logger.info("📥 [INPUT CONTEXT]")
         for k, v in inputs.items():
-            trace_logger.info(f"  * {k}: {v}")
+            if isinstance(v, (dict, list)):
+                indented = "\n".join(f"      {line}" for line in json.dumps(v, ensure_ascii=False, indent=2).split("\n"))
+                trace_logger.info(f"  * {k}:\n{indented}")
+            else:
+                trace_logger.info(f"  * {k}: {v}")
         trace_logger.info("")
 
     if prompt_details:
-        trace_logger.info("[LLM PROMPT / REQUEST CONTENT]")
+        trace_logger.info("📝 [LLM PROMPT / REQUEST CONTENT]")
         if isinstance(prompt_details, str):
             indented = "\n".join(f"    {line}" for line in prompt_details.split("\n"))
             trace_logger.info(f"{indented}\n")
@@ -57,7 +61,7 @@ def _log_trace(
             trace_logger.info(f"  {prompt_details}\n")
 
     if response is not None:
-        trace_logger.info("[LLM RESPONSE]")
+        trace_logger.info("📤 [LLM RESPONSE]")
         trace_logger.info("-" * 80)
         indented = "\n".join(f"  {line}" for line in str(response).split("\n"))
         trace_logger.info(indented)
@@ -65,14 +69,45 @@ def _log_trace(
         trace_logger.info("")
 
     if decision:
-        trace_logger.info("[DECISION & STATE MUTATION]")
+        trace_logger.info("💡 [DECISION & STATE MUTATION]")
         if isinstance(decision, dict):
             for dk, dv in decision.items():
                 trace_logger.info(f"  * {dk}: {dv}")
         else:
             trace_logger.info(f"  * Result: {decision}")
 
-    trace_logger.info(border + "\n\n")
+    trace_logger.info("═" * 80 + "\n\n")
+
+
+def _log_tool_trace(
+    tool_name: str,
+    args: dict = None,
+    output: Any = None,
+    error: str = None,
+):
+    border = "🛠️" * 3 + f" [TOOL CALL: {tool_name.upper()}] " + "🛠️" * 3
+    trace_logger.info("\n" + "◈" * 80)
+    trace_logger.info(border)
+    trace_logger.info("◈" * 80)
+    if args:
+        trace_logger.info("📥 [TOOL ARGUMENTS]")
+        trace_logger.info(f"  {json.dumps(args, ensure_ascii=False, indent=2)}")
+        trace_logger.info("")
+    if error:
+        trace_logger.info(f"❌ [ERROR]\n  {error}")
+    elif output is not None:
+        trace_logger.info("📤 [TOOL OUTPUT / RESULT]")
+        if isinstance(output, (dict, list)):
+            trace_logger.info(f"  {json.dumps(output, ensure_ascii=False, indent=2)}")
+        elif hasattr(output, "dict"):
+            try:
+                trace_logger.info(f"  {json.dumps(output.dict(), ensure_ascii=False, indent=2)}")
+            except Exception:
+                trace_logger.info(f"  {output}")
+        else:
+            trace_logger.info(f"  {output}")
+    trace_logger.info("◈" * 80 + "\n\n")
+
 
 
 # ---------------------------------------------------------------------------

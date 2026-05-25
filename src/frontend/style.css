@@ -556,7 +556,7 @@ textarea {
     color: var(--text-muted);
     border-radius: 4px;
     cursor: pointer;
-    opacity: 0;
+    opacity: 0.4;
     transition: var(--transition);
 }
 .session-delete-btn svg {

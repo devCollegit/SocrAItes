@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
@@ -30,7 +30,7 @@ from .agent.graph import GRAPH
 from .agent.state import DEFAULT_STATE
 from .rag.document_processor import process_pdf, compute_file_hash
 from .rag.vectorstore import add_documents, get_registered_documents, delete_document
-from .db.database import init_db, create_session, log_message, get_messages, list_sessions, delete_session, get_weaknesses, delete_weakness, get_pending_schedules, delete_schedule
+from .db.database import init_db, create_session, log_message, get_messages, list_sessions, delete_session, get_weaknesses, delete_weakness, get_pending_schedules, delete_schedule, get_user_profile, get_session
 
 app = FastAPI(title="SocrAItes API")
 init_db()
@@ -76,15 +76,21 @@ class ChatResponse(BaseModel):
     tool_results: List[Any] = []
 
 @app.post("/chat")
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     # 세션 생성 또는 기존 세션 사용
     if request.session_id:
         session_id = request.session_id
+        try:
+            sess = get_session(session_id)
+            user_id = sess.get("user_id", "default") if sess else "default"
+        except Exception:
+            user_id = "default"
     else:
         first_msg = request.messages[-1].content if request.messages else "새 대화"
         title = first_msg[:30] + ("..." if len(first_msg) > 30 else "")
         session_id = create_session(title=title)
-    logger.info(f"[/chat] session={session_id} | messages={len(request.messages)} | depth={request.socratic_depth}")
+        user_id = "default"
+    logger.info(f"[/chat] session={session_id} | user_id={user_id} | messages={len(request.messages)} | depth={request.socratic_depth}")
     try:
         initial_messages = [{"role": m.role, "content": m.content} for m in request.messages]
         initial_messages = initial_messages[-20:]  # 최근 10턴(20개 메시지)만 유지
@@ -94,10 +100,40 @@ async def chat(request: ChatRequest):
         if initial_messages:
             log_message(session_id, "user", initial_messages[-1]["content"])
 
+        # Restore pending_quiz from database metadata if it exists
+        restored_pending_quiz = []
+        try:
+            db_messages = get_messages(session_id, limit=20)
+            # Find the most recent assistant message with pending_quiz metadata
+            for db_msg in reversed(db_messages):
+                if db_msg["role"] == "assistant" and db_msg.get("metadata"):
+                    meta = json.loads(db_msg["metadata"])
+                    if "pending_quiz" in meta and meta["pending_quiz"]:
+                        restored_pending_quiz = meta["pending_quiz"]
+                        break
+        except Exception as e:
+            logger.warning(f"Failed to restore pending_quiz from DB: {e}")
+
+        # Load user profile
+        try:
+            user_profile = get_user_profile(user_id)
+        except Exception as e:
+            logger.warning(f"Failed to load user profile: {e}")
+            user_profile = {
+                "user_id": user_id,
+                "learning_style": "conceptual",
+                "preferred_tone": "encouraging",
+                "academic_background": "대학원생",
+                "notes": "",
+            }
+
         state = DEFAULT_STATE.copy()
         state.update({
             "messages": initial_messages,
             "socratic_depth": request.socratic_depth,
+            "session_id": session_id,
+            "pending_quiz": restored_pending_quiz,
+            "user_profile": user_profile,
         })
         
         runnable = GRAPH.compile()
@@ -124,8 +160,17 @@ async def chat(request: ChatRequest):
                 
                 # Send final result at the end (with tool_results)
                 answer = current_state.get("draft_answer", "I'm sorry, I couldn't formulate a response.")
-                # assistant 응답 DB 저장
-                log_message(session_id, "assistant", answer)
+                
+                # assistant 응답 DB 저장 (metadata 포함)
+                metadata_dict = {}
+                if current_state.get("tool_results"):
+                    metadata_dict["tool_results"] = current_state.get("tool_results")
+                if current_state.get("pending_quiz"):
+                    metadata_dict["pending_quiz"] = current_state.get("pending_quiz")
+                
+                metadata_str = json.dumps(metadata_dict, ensure_ascii=False) if metadata_dict else None
+                log_message(session_id, "assistant", answer, metadata=metadata_str)
+                
                 final_data = {
                     "type": "final_result",
                     "session_id": session_id,
@@ -136,6 +181,19 @@ async def chat(request: ChatRequest):
                     "frustration_level": current_state.get("frustration_level", 0)
                 }
                 yield f"data: {json.dumps(final_data, ensure_ascii=False)}\n\n"
+
+                # Trigger background diagnosis asynchronously after SSE ends
+                try:
+                    full_history = []
+                    for m in initial_messages:
+                        full_history.append({"role": m["role"], "content": m["content"]})
+                    full_history.append({"role": "assistant", "content": answer})
+                    
+                    from src.agent.sub_agents.diagnosis import run_background_diagnosis
+                    background_tasks.add_task(run_background_diagnosis, session_id, user_id, full_history)
+                    logger.info(f"[/chat] Enqueued background diagnosis task for session={session_id}, user={user_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to queue background diagnosis: {e}")
             except Exception as e:
                 logger.error(f"[/chat] Stream Error: {e}")
                 yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"

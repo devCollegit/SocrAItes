@@ -33,6 +33,7 @@ class AgentState(TypedDict, total=False):
     - ``contextualized_query``: Reformulated query from Coordinator.
     - ``tool_results``: Flattened tool results for API response.
     - ``pending_quiz``: Quiz items awaiting user answers.
+    - ``user_profile``: Personalization profile of the user.
     """
 
     messages: List[Dict[str, Any]]
@@ -53,6 +54,7 @@ class AgentState(TypedDict, total=False):
     # Misc
     tool_results: List[Dict[str, Any]]
     pending_quiz: List[Dict[str, Any]]
+    user_profile: Dict[str, Any]
 
 # Default initial state
 DEFAULT_STATE: AgentState = {
@@ -72,4 +74,5 @@ DEFAULT_STATE: AgentState = {
     "diagnosis_result": {},
     "tool_results": [],
     "pending_quiz": [],
+    "user_profile": {},
 }
