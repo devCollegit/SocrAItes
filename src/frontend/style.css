@@ -430,6 +430,76 @@ textarea {
     border-radius: var(--radius-md);
 }
 
+/* Weakness List */
+.weakness-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.weakness-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    font-size: 0.75rem;
+    transition: var(--transition);
+}
+.weakness-item:hover {
+    border-color: var(--border-hover);
+}
+.weakness-item-body {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    overflow: hidden;
+    flex: 1;
+}
+.weakness-concept {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+}
+.weakness-sev {
+    font-size: 0.65rem;
+    padding: 2px 6px;
+    border-radius: 10px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+.sev-low  { background: rgba(34,197,94,0.15);  color: #22c55e; }
+.sev-mid  { background: rgba(234,179,8,0.15);  color: #eab308; }
+.sev-high { background: rgba(239,68,68,0.15);  color: #ef4444; }
+.weakness-delete-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+    border-radius: 4px;
+    transition: var(--transition);
+    flex-shrink: 0;
+}
+.weakness-delete-btn:hover {
+    color: #ef4444;
+    background: rgba(239, 68, 68, 0.1);
+}
+.weakness-empty {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    text-align: center;
+    padding: 10px;
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-md);
+}
+
 /* Session List */
 .session-list {
     display: flex;

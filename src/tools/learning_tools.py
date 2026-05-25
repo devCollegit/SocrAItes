@@ -38,23 +38,23 @@ class QuizRequest(BaseModel):
 class ScheduleRequest(BaseModel):
     """Parameters for ``schedule_review`` tool.
 
-    * ``datetime`` – when the review should occur (ISO 8601 string).
+    * ``datetime`` – when the review should occur (ISO 8601 string). Defaults to 7 days from now.
     * ``description`` – optional note about the review.
     """
 
-    datetime: str = Field(..., description="ISO 8601 datetime for the review")
+    datetime: str | None = Field(None, description="ISO 8601 datetime for the review. If omitted, defaults to 7 days from now.")
     description: str | None = Field(None, description="Optional description of the review")
     weakness_id: int | None = Field(None, description="Optional weakness ID linked to this review")
 
 class WeaknessRecord(BaseModel):
     """Parameters for ``save_weakness`` tool.
 
-    * ``concept`` – concept that the user struggled with.
+    * ``concept`` – concept that the user struggled with. Infer from recent conversation if not explicit.
     * ``details`` – free‑form details about the difficulty.
     """
 
-    concept: str = Field(..., description="Concept the user is weak on")
-    details: str = Field(..., description="Additional details about the weakness")
+    concept: str = Field(..., description="Concept the user is weak on. Infer from conversation context.")
+    details: str = Field("학습 중 이해가 어려운 개념으로 식별됨", description="Additional details about the weakness")
     severity: int = Field(2, ge=1, le=5, description="Weakness severity (1-5)")
     session_id: str | None = Field(None, description="Optional session ID")
 
@@ -247,7 +247,11 @@ def schedule_review(request: Dict[str, Any]) -> Dict[str, Any]:
     """
     req = ScheduleRequest(**request)
     logger.info("schedule_review called with %s", req)
-    review_at = datetime.fromisoformat(req.datetime)
+    if req.datetime:
+        review_at = datetime.fromisoformat(req.datetime)
+    else:
+        from datetime import timedelta
+        review_at = datetime.now() + timedelta(days=7)
     init_db()
     schedule_id = add_schedule(
         review_at=review_at.isoformat(),
@@ -302,7 +306,7 @@ def _tool_generate_quiz(topic: str, num_questions: int = 5) -> Dict[str, Any]:
     return generate_quiz({"topic": topic, "num_questions": num_questions})
 
 
-def _tool_schedule_review(datetime: str, description: str | None = None, weakness_id: int | None = None) -> Dict[str, Any]:
+def _tool_schedule_review(datetime: str | None = None, description: str | None = None, weakness_id: int | None = None) -> Dict[str, Any]:
     return schedule_review({"datetime": datetime, "description": description, "weakness_id": weakness_id})
 
 

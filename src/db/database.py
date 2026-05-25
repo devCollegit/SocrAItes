@@ -264,6 +264,16 @@ def resolve_weakness(weakness_id: int) -> None:
     conn.close()
 
 
+def delete_weakness(weakness_id: int) -> bool:
+    """Delete a weakness record. Returns True if a row was deleted."""
+    conn = get_connection()
+    cur = conn.execute("DELETE FROM weaknesses WHERE id = ?", (weakness_id,))
+    conn.commit()
+    deleted = cur.rowcount > 0
+    conn.close()
+    return deleted
+
+
 def get_weaknesses(
     resolved: Optional[bool] = None,
     limit: int = 100,
@@ -320,6 +330,16 @@ def complete_schedule(schedule_id: int) -> None:
     conn.execute("UPDATE schedules SET completed = 1 WHERE id = ?", (schedule_id,))
     conn.commit()
     conn.close()
+
+
+def delete_schedule(schedule_id: int) -> bool:
+    """Delete a schedule record. Returns True if a row was deleted."""
+    conn = get_connection()
+    cur = conn.execute("DELETE FROM schedules WHERE id = ?", (schedule_id,))
+    conn.commit()
+    deleted = cur.rowcount > 0
+    conn.close()
+    return deleted
 
 
 # ---------------------------------------------------------------------------
