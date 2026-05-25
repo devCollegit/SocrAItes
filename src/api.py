@@ -30,7 +30,7 @@ from .agent.graph import GRAPH
 from .agent.state import DEFAULT_STATE
 from .rag.document_processor import process_pdf, compute_file_hash
 from .rag.vectorstore import add_documents, get_registered_documents, delete_document
-from .db.database import init_db, create_session, log_message, get_messages, list_sessions, delete_session
+from .db.database import init_db, create_session, log_message, get_messages, list_sessions, delete_session, get_weaknesses, delete_weakness, get_pending_schedules, delete_schedule
 
 app = FastAPI(title="SocrAItes API")
 init_db()
@@ -112,7 +112,7 @@ async def chat(request: ChatRequest):
                         # Serialize safely
                         serializable_output = {}
                         for k, v in node_output.items():
-                            if k in ["contextualized_query", "next_step", "plan", "draft_answer", "evaluation", "retrieved_docs", "tool_results", "frustration_level"]:
+                            if k in ["contextualized_query", "next_step", "plan", "sub_agents", "draft_answer", "evaluation", "retrieved_docs", "tool_results", "frustration_level", "retry_count"]:
                                 serializable_output[k] = v
                         
                         data = {
@@ -255,6 +255,50 @@ async def get_session_messages(session_id: str):
         return {"session_id": session_id, "messages": msgs}
     except Exception as e:
         logger.error(f"[/sessions/{session_id}/messages] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/weaknesses")
+async def list_weaknesses():
+    """미해결 약점 목록 반환 (최신순)."""
+    try:
+        items = get_weaknesses(resolved=False)
+        return {"weaknesses": items}
+    except Exception as e:
+        logger.error(f"[/weaknesses] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/weaknesses/{weakness_id}")
+async def remove_weakness(weakness_id: int):
+    """약점 레코드 삭제."""
+    try:
+        deleted = delete_weakness(weakness_id)
+        return {"status": "deleted" if deleted else "not_found", "weakness_id": weakness_id}
+    except Exception as e:
+        logger.error(f"[DELETE /weaknesses/{weakness_id}] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/schedules")
+async def list_schedules():
+    """미완료 복습 일정 목록 반환."""
+    try:
+        items = get_pending_schedules()
+        return {"schedules": items}
+    except Exception as e:
+        logger.error(f"[/schedules] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/schedules/{schedule_id}")
+async def remove_schedule(schedule_id: int):
+    """복습 일정 삭제."""
+    try:
+        deleted = delete_schedule(schedule_id)
+        return {"status": "deleted" if deleted else "not_found", "schedule_id": schedule_id}
+    except Exception as e:
+        logger.error(f"[DELETE /schedules/{schedule_id}] Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

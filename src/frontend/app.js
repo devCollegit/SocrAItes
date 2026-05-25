@@ -20,6 +20,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const pdfUpload = document.getElementById('pdf-upload');
     const registeredDocsList = document.getElementById('registered-docs-list');
     const sessionList = document.getElementById('session-list');
+    const weaknessList = document.getElementById('weakness-list');
+    const scheduleList = document.getElementById('schedule-list');
 
     // State
     let messages = [];
@@ -202,8 +204,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 statDocs.innerText = docCount;
             }
 
-            // 세션 목록 갱신
+            // 세션 목록 및 약점 목록 갱신
             await loadSessions();
+            if (data.tool_results && data.tool_results.length > 0) {
+                if (data.tool_results.some(r => r.tool === 'save_weakness' && r.ok)) await fetchWeaknesses();
+                if (data.tool_results.some(r => r.tool === 'schedule_review' && r.ok)) await fetchSchedules();
+            }
 
 
         } catch (error) {
@@ -520,8 +526,92 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Fetch and render weaknesses
+    async function fetchWeaknesses() {
+        try {
+            const response = await fetch('/weaknesses');
+            if (!response.ok) throw new Error('Failed to fetch weaknesses');
+            const data = await response.json();
+            const items = data.weaknesses || [];
+
+            if (items.length === 0) {
+                weaknessList.innerHTML = '<div class="weakness-empty">등록된 약점 없음</div>';
+                return;
+            }
+
+            const severityLabel = (s) => ['', '낮음', '낮음', '보통', '높음', '높음'][s] || '보통';
+            const severityClass = (s) => s >= 4 ? 'sev-high' : s >= 3 ? 'sev-mid' : 'sev-low';
+
+            weaknessList.innerHTML = items.map(w => `
+                <div class="weakness-item" data-id="${w.id}">
+                    <div class="weakness-item-body">
+                        <span class="weakness-concept">${w.concept}</span>
+                        <span class="weakness-sev ${severityClass(w.severity)}">${severityLabel(w.severity)}</span>
+                    </div>
+                    <button class="weakness-delete-btn" data-id="${w.id}" title="삭제">
+                        <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+                    </button>
+                </div>
+            `).join('');
+
+            weaknessList.querySelectorAll('.weakness-delete-btn').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const id = parseInt(btn.dataset.id);
+                    await fetch(`/weaknesses/${id}`, { method: 'DELETE' });
+                    await fetchWeaknesses();
+                });
+            });
+        } catch (error) {
+            console.error('Error fetching weaknesses:', error);
+        }
+    }
+
+    // Fetch and render review schedules
+    async function fetchSchedules() {
+        try {
+            const response = await fetch('/schedules');
+            if (!response.ok) throw new Error('Failed to fetch schedules');
+            const data = await response.json();
+            const items = data.schedules || [];
+
+            if (items.length === 0) {
+                scheduleList.innerHTML = '<div class="weakness-empty">등록된 복습 일정 없음</div>';
+                return;
+            }
+
+            scheduleList.innerHTML = items.map(s => {
+                const dt = new Date(s.review_at);
+                const dateStr = dt.toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' });
+                const desc = s.description || '복습 일정';
+                return `
+                    <div class="weakness-item" data-id="${s.id}">
+                        <div class="weakness-item-body">
+                            <span class="weakness-concept" title="${desc}">${desc}</span>
+                            <span class="weakness-sev sev-low">${dateStr}</span>
+                        </div>
+                        <button class="weakness-delete-btn" data-id="${s.id}" title="삭제">
+                            <svg viewBox="0 0 20 20" fill="currentColor" width="14" height="14"><path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"/></svg>
+                        </button>
+                    </div>
+                `;
+            }).join('');
+
+            scheduleList.querySelectorAll('.weakness-delete-btn').forEach(btn => {
+                btn.addEventListener('click', async () => {
+                    const id = parseInt(btn.dataset.id);
+                    await fetch(`/schedules/${id}`, { method: 'DELETE' });
+                    await fetchSchedules();
+                });
+            });
+        } catch (error) {
+            console.error('Error fetching schedules:', error);
+        }
+    }
+
     // Initial fetch of registered documents
     fetchRegisteredDocuments();
+    fetchWeaknesses();
+    fetchSchedules();
 
     // 세션 목록 불러오기
     async function loadSessions() {
