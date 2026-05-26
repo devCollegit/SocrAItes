@@ -287,15 +287,32 @@ def save_weakness(
     session_id: Optional[str] = None,
     user_id: str = "default",
 ) -> int:
-    """Persist a weakness record and return its row id."""
+    """Persist a weakness record and return its row id.
+
+    If an unresolved weakness with the same concept already exists for this
+    user, update it in-place (severity and details) instead of inserting a
+    duplicate row.
+    """
     now = _now()
     conn = get_connection()
-    cur = conn.execute(
-        "INSERT INTO weaknesses (session_id, concept, details, severity, created_at, updated_at, user_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (session_id, concept, details, severity, now, now, user_id),
-    )
-    row_id = cur.lastrowid
+    # Check for an existing unresolved weakness with the same concept/user
+    row = conn.execute(
+        "SELECT id FROM weaknesses WHERE user_id = ? AND concept = ? AND resolved = 0",
+        (user_id, concept),
+    ).fetchone()
+    if row:
+        row_id = row["id"]
+        conn.execute(
+            "UPDATE weaknesses SET details = ?, severity = ?, updated_at = ? WHERE id = ?",
+            (details, severity, now, row_id),
+        )
+    else:
+        cur = conn.execute(
+            "INSERT INTO weaknesses (session_id, concept, details, severity, created_at, updated_at, user_id) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, concept, details, severity, now, now, user_id),
+        )
+        row_id = cur.lastrowid
     conn.commit()
     conn.close()
     return row_id

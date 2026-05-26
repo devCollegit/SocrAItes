@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
+from datetime import datetime, timedelta
 import shutil
 import uuid
 import os
@@ -28,9 +29,26 @@ logger = logging.getLogger("socraites.api")
 
 from .agent.graph import GRAPH
 from .agent.state import DEFAULT_STATE
+from .agent.llm import llm
 from .rag.document_processor import process_pdf, compute_file_hash
 from .rag.vectorstore import add_documents, get_registered_documents, delete_document
-from .db.database import init_db, create_session, log_message, get_messages, list_sessions, delete_session, get_weaknesses, delete_weakness, get_pending_schedules, delete_schedule, get_user_profile, get_session
+from .db.database import (
+    init_db,
+    create_session,
+    log_message,
+    get_messages,
+    list_sessions,
+    delete_session,
+    get_weaknesses,
+    delete_weakness,
+    get_pending_schedules,
+    delete_schedule,
+    get_user_profile,
+    get_session,
+    get_user_strengths,
+    get_reports,
+    save_report,
+)
 
 app = FastAPI(title="SocrAItes API")
 init_db()
@@ -357,6 +375,209 @@ async def remove_schedule(schedule_id: int):
         return {"status": "deleted" if deleted else "not_found", "schedule_id": schedule_id}
     except Exception as e:
         logger.error(f"[DELETE /schedules/{schedule_id}] Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _parse_iso_dt(value: str) -> datetime:
+    """Parse ISO datetime with light normalization for trailing Z."""
+    normalized = value.replace("Z", "+00:00")
+    return datetime.fromisoformat(normalized)
+
+
+def _infer_category(concept: str) -> str:
+    """Map concept text to a coarse study category for report stats."""
+    text = (concept or "").lower()
+    if any(k in text for k in ["트랜스포머", "어텐션", "인코더", "디코더", "포지셔널", "딥러닝", "신경망", "머신러닝"]):
+        return "AI/딥러닝"
+    if any(k in text for k in ["세마포어", "뮤텍스", "데드락", "스레드", "프로세스", "운영체제"]):
+        return "운영체제"
+    if any(k in text for k in ["cap", "분산", "일관성", "가용성", "partition", "consistency", "availability"]):
+        return "분산시스템"
+    if any(k in text for k in ["자료구조", "알고리즘", "정렬", "그래프", "트리", "dp"]):
+        return "자료구조/알고리즘"
+    return "기타"
+
+
+@app.get("/recommend-chips")
+async def recommend_chips():
+    """Return personalized quick-start chips based on pending schedules and weaknesses."""
+    try:
+        now = datetime.now()
+        horizon = now + timedelta(days=7)
+
+        schedules = get_pending_schedules()
+        weak_items = get_weaknesses(resolved=False)
+
+        due_soon = []
+        for s in schedules:
+            review_at = s.get("review_at")
+            if not review_at:
+                continue
+            try:
+                dt = _parse_iso_dt(review_at)
+            except Exception:
+                continue
+            if now <= dt <= horizon:
+                due_soon.append((dt, s))
+
+        due_soon.sort(key=lambda item: item[0])
+        weak_sorted = sorted(weak_items, key=lambda w: int(w.get("severity") or 1), reverse=True)
+
+        chips: List[Dict[str, Any]] = []
+
+        for dt, s in due_soon[:2]:
+            desc = (s.get("description") or "복습 일정").strip()
+            label_prefix = "🚨 오늘" if dt.date() == now.date() else "🔁 복습"
+            chips.append(
+                {
+                    "label": f"{label_prefix}: {desc[:20]}",
+                    "message": f"{desc}를 오늘 복습할 수 있게 소크라테스식으로 도와줘",
+                    "type": "schedule",
+                    "due": dt.date().isoformat(),
+                }
+            )
+
+        for w in weak_sorted[:2]:
+            concept = (w.get("concept") or "핵심 개념").strip()
+            chips.append(
+                {
+                    "label": f"⚠️ 약점 보완: {concept[:20]}",
+                    "message": f"{concept} 개념을 내가 이해했는지 점검하면서 복습해줘",
+                    "type": "weakness",
+                }
+            )
+
+        # No fallback chips by design: if there is no personalized data, return empty list.
+        return {"chips": chips[:4]}
+    except Exception as e:
+        logger.error(f"[/recommend-chips] Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/report-data")
+async def get_report_data(user_id: str = "default"):
+    """Aggregate strengths, weaknesses, profile, and stats for metacognition report UI."""
+    try:
+        weaknesses = get_weaknesses(resolved=False, limit=100)
+        strengths = get_user_strengths(user_id=user_id, limit=100)
+        profile = get_user_profile(user_id=user_id)
+
+        now = datetime.now()
+        recent_7d_weaknesses = 0
+        category_counter: Dict[str, int] = {}
+        for w in weaknesses:
+            created_at = w.get("created_at")
+            if created_at:
+                try:
+                    if _parse_iso_dt(created_at) >= (now - timedelta(days=7)):
+                        recent_7d_weaknesses += 1
+                except Exception:
+                    pass
+            category = _infer_category(w.get("concept", ""))
+            category_counter[category] = category_counter.get(category, 0) + 1
+
+        top_categories = [k for k, _ in sorted(category_counter.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+
+        stats = {
+            "total_weaknesses": len(weaknesses),
+            "total_strengths": len(strengths),
+            "recent_7d_weaknesses": recent_7d_weaknesses,
+            "top_categories": top_categories,
+        }
+
+        return {
+            "weaknesses": weaknesses,
+            "strengths": strengths,
+            "profile_summary": {
+                "strengths_summary": profile.get("strengths_summary", ""),
+                "weaknesses_summary": profile.get("weaknesses_summary", ""),
+                "learning_style": profile.get("learning_style", "conceptual"),
+            },
+            "stats": stats,
+        }
+    except Exception as e:
+        logger.error(f"[/report-data] Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/reports")
+async def list_reports(user_id: str = "default", limit: int = 10):
+    """Return saved metacognition reports."""
+    try:
+        return {"reports": get_reports(user_id=user_id, limit=limit)}
+    except Exception as e:
+        logger.error(f"[/reports] Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/generate-report")
+async def generate_report(payload: dict | None = None):
+    """Generate a markdown report from learner profile/strength/weakness context and save it."""
+    payload = payload or {}
+    user_id = payload.get("user_id", "default")
+
+    try:
+        report_data = await get_report_data(user_id=user_id)
+
+        weaknesses = report_data.get("weaknesses", [])
+        strengths = report_data.get("strengths", [])
+        profile_summary = report_data.get("profile_summary", {})
+        stats = report_data.get("stats", {})
+
+        strengths_lines = [f"- {s.get('concept', '개념')}" for s in strengths[:12]] or ["- (기록 없음)"]
+        weakness_lines = [
+            f"- {w.get('concept', '개념')} (심각도 {w.get('severity', 1)})"
+            for w in weaknesses[:12]
+        ] or ["- (기록 없음)"]
+
+        prompt = (
+            "당신은 학습 코치입니다. 아래 학습 데이터를 바탕으로 한국어 메타인지 리포트를 마크다운으로 작성하세요.\n"
+            "길이는 500~900자 내외로 간결하지만 실행 가능해야 합니다.\n\n"
+            "[학습 데이터]\n"
+            f"강점 목록:\n{chr(10).join(strengths_lines)}\n\n"
+            f"약점 목록:\n{chr(10).join(weakness_lines)}\n\n"
+            f"강점 요약: {profile_summary.get('strengths_summary', '')}\n"
+            f"약점 요약: {profile_summary.get('weaknesses_summary', '')}\n"
+            f"학습 스타일: {profile_summary.get('learning_style', 'conceptual')}\n"
+            f"통계: total_weaknesses={stats.get('total_weaknesses', 0)}, total_strengths={stats.get('total_strengths', 0)}, recent_7d_weaknesses={stats.get('recent_7d_weaknesses', 0)}, top_categories={stats.get('top_categories', [])}\n\n"
+            "[출력 형식]\n"
+            "## ✅ 잘 이해하고 있는 것\n"
+            "## 🔴 보완이 필요한 것\n"
+            "## 💡 다음 학습 권장 순서 (3단계)\n"
+            "## 📈 총평\n"
+        )
+
+        generated_body = ""
+        try:
+            llm_response = llm.invoke(prompt)
+            generated_body = getattr(llm_response, "content", str(llm_response)).strip()
+        except Exception as llm_err:
+            logger.warning(f"[/generate-report] LLM generation failed, using fallback: {llm_err}")
+
+        if not generated_body:
+            generated_body = (
+                "## ✅ 잘 이해하고 있는 것\n"
+                + ("\n".join(strengths_lines[:5]) if strengths else "- 아직 명시적인 강점 기록이 없습니다.")
+                + "\n\n## 🔴 보완이 필요한 것\n"
+                + ("\n".join(weakness_lines[:5]) if weaknesses else "- 현재 등록된 약점이 없습니다.")
+                + "\n\n## 💡 다음 학습 권장 순서 (3단계)\n"
+                + "1. 심각도 높은 약점 1개를 선택해 개념 정의를 스스로 설명해보기\n"
+                + "2. 선택한 약점으로 3문항 퀴즈를 풀고 오답 이유를 정리하기\n"
+                + "3. 48시간 내 같은 개념을 다시 복습해 장기기억으로 전환하기\n"
+                + "\n## 📈 총평\n"
+                + f"약점 {stats.get('total_weaknesses', 0)}개, 강점 {stats.get('total_strengths', 0)}개 기반으로 다음 학습 우선순위를 재정렬해야 합니다."
+            )
+
+        title = f"메타인지 리포트 ({datetime.now().strftime('%Y-%m-%d')})"
+        report_id = save_report(title=title, body=generated_body, user_id=user_id)
+
+        return {
+            "report_id": report_id,
+            "title": title,
+            "body": generated_body,
+        }
+    except Exception as e:
+        logger.error(f"[/generate-report] Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

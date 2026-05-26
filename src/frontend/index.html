@@ -154,6 +154,7 @@
                 <div class="section-label">
                     <svg viewBox="0 0 20 20" fill="currentColor"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/></svg>
                     약점 기록
+                    <button class="report-link-btn" id="open-report-btn" title="메타인지 리포트 보기">리포트</button>
                 </div>
                 <div class="weakness-list" id="weaknesses-list">
                     <div class="weakness-empty">등록된 약점 없음</div>
@@ -217,10 +218,9 @@
                     <div class="welcome-icon">🦉</div>
                     <h3>안녕하세요, 저는 SocrAItes입니다</h3>
                     <p>정답을 바로 알려주지 않아요. 대신 질문으로 스스로 답을 찾도록 도와드립니다.</p>
-                    <div class="quick-start-chips">
-                        <button class="chip" data-msg="CAP 정리가 뭔지 설명해줄 수 있어?">💬 CAP 정리란?</button>
-                        <button class="chip" data-msg="분산 시스템에서 일관성과 가용성의 트레이드오프를 이해하고 싶어">🔍 분산시스템 개념</button>
-                        <button class="chip" data-msg="오늘 공부할 내용을 정리해줘">📋 학습 계획 세우기</button>
+                    <div class="quick-start-chips" id="quick-start-chips" style="display: none;"></div>
+                    <div class="quick-start-empty" id="quick-start-empty">
+                        등록된 복습 일정이나 약점이 생기면, 여기에서 개인화 추천이 자동으로 보입니다.
                     </div>
                 </div>
             </div>
@@ -273,6 +273,22 @@
             <div class="modal-actions">
                 <button class="modal-btn modal-btn-cancel" id="modal-cancel">취소</button>
                 <button class="modal-btn modal-btn-confirm" id="modal-confirm">삭제</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 메타인지 리포트 모달 -->
+    <div class="report-modal-overlay" id="report-modal" style="display:none;">
+        <div class="report-modal">
+            <div class="report-modal-header">
+                <h2>📊 나의 학습 메타인지 리포트</h2>
+                <button class="report-close-btn" id="close-report-btn" title="닫기">✕</button>
+            </div>
+            <div class="report-modal-body" id="report-modal-body">
+                <div class="report-loading">리포트 데이터를 불러오는 중...</div>
+            </div>
+            <div class="report-modal-footer">
+                <button class="report-action-btn report-generate-btn" id="generate-report-btn">🤖 AI 리포트 생성</button>
             </div>
         </div>
     </div>
