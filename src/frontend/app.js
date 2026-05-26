@@ -19,6 +19,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const quickStartEmpty = document.getElementById('quick-start-empty');
     const attachBtn = document.getElementById('attach-btn');
     const pdfUpload = document.getElementById('pdf-upload');
+    const uploadStatus = document.getElementById('upload-status');
+    const uploadStatusTitle = document.getElementById('upload-status-title');
+    const uploadStatusMeta = document.getElementById('upload-status-meta');
     const registeredDocsList = document.getElementById('registered-docs-list');
     const sessionList = document.getElementById('session-list');
     const scheduleList = document.getElementById('schedule-list');
@@ -37,6 +40,9 @@ document.addEventListener('DOMContentLoaded', () => {
     let turnCount = 0;
     let docCount = 0;
     let frustrationLevel = 0;
+    let isPdfUploading = false;
+    let uploadTimer = null;
+    let uploadStartedAt = 0;
 
     // 커스텀 확인 모달
     const deleteModal = document.getElementById('delete-modal');
@@ -75,7 +81,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Sidebar Toggle
     const toggleSidebar = () => {
         sidebar.classList.toggle('collapsed');
-        sidebarOpenBtn.style.display = sidebar.classList.contains('collapsed') ? 'flex' : 'none';
+        const isCollapsed = sidebar.classList.contains('collapsed');
+        sidebarOpenBtn.style.display = isCollapsed ? 'flex' : 'none';
+        document.body.classList.toggle('sidebar-collapsed', isCollapsed);
     };
     sidebarToggle.addEventListener('click', toggleSidebar);
     sidebarOpenBtn.addEventListener('click', toggleSidebar);
@@ -468,17 +476,71 @@ document.addEventListener('DOMContentLoaded', () => {
             sendMessage();
         }
     });
+
+    function clearUploadTimer() {
+        if (uploadTimer) {
+            clearInterval(uploadTimer);
+            uploadTimer = null;
+        }
+    }
+
+    function setUploadStatus(state, title, meta) {
+        if (!uploadStatus || !uploadStatusTitle || !uploadStatusMeta) return;
+        uploadStatus.style.display = 'block';
+        uploadStatus.classList.remove('done', 'error');
+        if (state === 'done') uploadStatus.classList.add('done');
+        if (state === 'error') uploadStatus.classList.add('error');
+        uploadStatusTitle.textContent = title;
+        uploadStatusMeta.textContent = meta;
+    }
+
+    function hideUploadStatus(delayMs = 0) {
+        if (!uploadStatus) return;
+        window.setTimeout(() => {
+            uploadStatus.style.display = 'none';
+            uploadStatus.classList.remove('done', 'error');
+        }, delayMs);
+    }
+
+    function startUploadStatus(fileName) {
+        uploadStartedAt = Date.now();
+        const escapedName = fileName || 'PDF';
+        setUploadStatus('loading', `${escapedName} 처리 중...`, '업로드 시작됨 · 보통 2~3분 소요됩니다.');
+        clearUploadTimer();
+        uploadTimer = setInterval(() => {
+            const elapsedSec = Math.floor((Date.now() - uploadStartedAt) / 1000);
+            const mm = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
+            const ss = String(elapsedSec % 60).padStart(2, '0');
+            setUploadStatus('loading', `${escapedName} 처리 중...`, `진행 시간 ${mm}:${ss} · 텍스트 추출/임베딩 중일 수 있습니다.`);
+        }, 1000);
+    }
+
+    function finishUploadStatus(isSuccess, message) {
+        clearUploadTimer();
+        if (isSuccess) {
+            setUploadStatus('done', '처리 완료', message);
+            hideUploadStatus(2500);
+        } else {
+            setUploadStatus('error', '처리 실패', message);
+        }
+    }
     
     // PDF Upload Handling
     if (attachBtn && pdfUpload) {
-        attachBtn.addEventListener('click', () => pdfUpload.click());
+        attachBtn.addEventListener('click', () => {
+            if (isPdfUploading) return;
+            pdfUpload.click();
+        });
         
         pdfUpload.addEventListener('change', async (e) => {
             const file = e.target.files[0];
-            if (!file) return;
+            if (!file || isPdfUploading) return;
+            isPdfUploading = true;
+            attachBtn.disabled = true;
+            startUploadStatus(file.name);
             
             // Show system message for upload starting
-            addMessage(`📄 **${file.filename || file.name}** 파일을 업로드 중입니다...`, 'system');
+            addMessage(`📄 **${file.filename || file.name}** 파일 업로드를 시작합니다. 처리까지 2~3분 정도 걸릴 수 있어요.`, 'system');
             
             const formData = new FormData();
             formData.append('file', file);
@@ -497,8 +559,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const data = await response.json();
                 if (data.status === 'duplicate') {
                     addMessage(`⚠️ **${data.filename}** 은 이미 등록된 파일입니다.`, 'system');
+                    finishUploadStatus(true, `${data.filename} 은 이미 등록되어 있어 중복 처리를 건너뛰었습니다.`);
                 } else {
                     addMessage(`✅ **${data.filename}** 등록 완료! (${data.chunks_added}개의 지식 조각 추출)`, 'system');
+                    finishUploadStatus(true, `${data.filename} 처리 완료 · ${data.chunks_added}개 지식 조각이 반영되었습니다.`);
                 }
                 
                 // Update registered documents list
@@ -507,9 +571,12 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (error) {
                 console.error(error);
                 addMessage(`❌ 업로드 실패: ${error.message}`, 'system');
+                finishUploadStatus(false, `오류: ${error.message}`);
             } finally {
                 // Clear input so same file can be uploaded again if needed
                 pdfUpload.value = '';
+                attachBtn.disabled = false;
+                isPdfUploading = false;
             }
         });
     }
