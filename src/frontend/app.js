@@ -205,7 +205,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const data = JSON.parse(jsonStr);
                     if (data.type === 'node_end') {
                         updateProgressStep(loadingId, data.node, data.output);
-                        if (data.node === 'coordinator' && data.output.frustration_level !== undefined) {
+                        if (data.node === 'router' && data.output.frustration_level !== undefined) {
                             updateFrustrationUI(data.output.frustration_level);
                         }
                     } else if (data.type === 'final_result') {
@@ -400,12 +400,20 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const nodeLabels = {
-        'coordinator': '🔍 질문 분석 및 문맥 이해 & 유형 분류',
-        'planner': '📋 Socratic 학습 계획 수립',
-        'retrieval': '📚 Elasticsearch 강의 자료 검색',
-        'supervisor': '🧠 Socratic 튜터 답변 생성',
-        'evaluator': '⚖️ 답변 품질 검증 및 자가 교정',
-        'direct_response': '💬 일반 안내 및 대화 답변 작성'
+        'router':          '🔍 의도 분류 및 쿼리 재작성',
+        'retrieval_agent': '📚 강의 자료 검색',
+        'socratic_agent':  '🧠 소크라테스 응답 생성',
+        'tool_agent':      '🛠️ 도구 실행',
+        'composer':        '✍️ 최종 응답 조합',
+        'reviewer':        '⚖️ 품질 검증',
+        'responder':       '💬 일반 대화 응답',
+    };
+
+    const routeLabels = {
+        'learn':  '학습 (learn)',
+        'tools':  '도구 실행 (tools)',
+        'escape': '정답 직접 제공 (escape)',
+        'chat':   '일반 대화 (chat)',
     };
 
     function updateProgressStep(loadingId, node, output) {
@@ -413,20 +421,18 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!stepsContainer) return;
 
         let detail = '';
-        if (node === 'coordinator') {
-            const routeText = output.next_step === 'planner' ? '개념 학습 (PLAN)' : '일반 대화 (DIRECT)';
-            detail = `재구성 결과: "${output.contextualized_query}"<br>판별 결과: ${routeText}`;
-        } else if (node === 'planner') {
-            detail = `Socratic 튜터링 가이드 구성 완료`;
-        } else if (node === 'retrieval') {
+        if (node === 'router') {
+            const route = output.route || '';
+            const query = output.rewritten_query || '';
+            const routeText = routeLabels[route] || route;
+            detail = `분류: <strong>${routeText}</strong><br>재작성: "${escapeHtml(query)}"`;
+        } else if (node === 'retrieval_agent') {
             const count = output.retrieved_docs ? output.retrieved_docs.length : 0;
-            detail = `검색 완료 (${count}개 조각 참조)`;
-        } else if (node === 'supervisor') {
-            detail = `소크라테스식 응답 가이드라인 작성 완료`;
-        } else if (node === 'evaluator') {
-            detail = `품질 기준 검사 통과`;
-        } else if (node === 'direct_response') {
-            detail = `일반 대화형 응답 생성 완료`;
+            detail = `${count}개 자료 참조`;
+        } else if (node === 'reviewer') {
+            const passed = output.evaluation?.pass;
+            const retry = output.retry_count || 0;
+            detail = passed === false ? `검증 실패 — 재시도 ${retry}회` : `검증 통과`;
         }
 
         const label = nodeLabels[node] || node;

@@ -22,7 +22,6 @@ from src.agent.llm import llm, _get_content
 from src.agent.helpers import (
     _log_trace,
     _detect_frustration,
-    _is_last_message_quiz_prompt,
     _format_history,
 )
 
@@ -61,8 +60,14 @@ Analyze the conversation and latest user message, then output a single JSON with
        "힌트 말고", "소크라테스 말고", "직접 알려줘", "모르겠으니까 그냥 알려줘",
        "설명 말고 답만", "답을 알려주세요"
 
-   나머지 (escape가 아닌 경우):
-   - "tools"  : 퀴즈 생성, 약점/강점 저장, 복습 일정 등록 등 명시적 도구 요청.
+   ⚠️ CRITICAL — escape 다음으로 판단:
+   - "tools"  : 도구 실행이 필요한 명시적 요청. 학습 주제가 포함되어도 반드시 "tools".
+     예시 표현 (이에 국한되지 않음):
+       퀴즈/문제: "퀴즈 내줘", "문제 내줘", "LoRA 퀴즈 내줘", "연습문제 풀고 싶어", "퀴즈로 테스트해줘"
+       약점/강점: "약점 저장해줘", "이 개념 약점으로 등록해줘", "강점으로 저장해줘"
+       일정:     "복습 일정 잡아줘", "일정 등록해줘", "나중에 복습할 수 있게 저장해줘"
+
+   나머지:
    - "chat"   : 인사, 감사, 잡담 등 학습과 무관한 캐주얼 대화.
    - "learn"  : 강의 자료 기반 소크라테스식 학습 (기본값).
 
@@ -76,6 +81,7 @@ Analyze the conversation and latest user message, then output a single JSON with
 Frustration level: {frustration_level} (0=none, 높을수록 더 좌절함)
 Socratic depth: {depth_mode}
 Evaluator feedback (retry 시): "{eval_feedback}"
+Quiz in progress: {quiz_in_progress} (True면 퀴즈 진행 중 — "정답 알려줘" 등은 반드시 "escape"로 분류)
 
 Conversation History:
 {history_text}
@@ -127,50 +133,26 @@ def router(state: AgentState) -> AgentState:
     last_message = messages[-1]["content"] if messages else ""
 
     # ── 1. 좌절 레벨 계산 ────────────────────────────────────────
-    # 전체 대화에서 사용자의 좌절 신호 횟수를 누적한다.
     frustration_count = sum(
         1 for msg in messages
         if msg.get("role") == "user" and _detect_frustration(msg.get("content", ""))
     )
     state["frustration_level"] = frustration_count
 
-    # ── 2. 퀴즈 중 좌절 시 즉시 learn 라우팅 ────────────────────
-    # LLM 호출 없이 바로 learn route + active_agents 기본값 적용.
-    pending_quiz = state.get("pending_quiz", [])
-    is_quiz_pending = len(pending_quiz) > 0 or _is_last_message_quiz_prompt(messages[:-1])
-    is_frustrated_in_quiz = (
-        is_quiz_pending
-        and messages
-        and messages[-1].get("role") == "user"
-        and _detect_frustration(messages[-1].get("content", ""))
-    )
-
-    if is_frustrated_in_quiz:
-        # 퀴즈 중 좌절: 소크라테스 힌트 제공을 위해 learn route로 강제 분기
-        state["rewritten_query"] = last_message
-        state["route"] = "learn"
-        state["active_agents"] = ["retrieval", "socratic"]
-        state["subtask"] = "퀴즈 중 좌절 감지 — 힌트와 격려를 제공하며 소크라테스식 유도"
-        logger.info("퀴즈 중 좌절 감지 — LLM 없이 learn으로 즉시 라우팅.")
-        _log_trace(
-            step="Router",
-            purpose="퀴즈 중 좌절 감지로 LLM 바이패스",
-            inputs={"Message": last_message, "Frustration": frustration_count},
-            decision="route=learn (LLM 없이 즉시 결정)",
-        )
-        return state
-
-    # ── 3. LLM 호출 ─────────────────────────────────────────────
+    # ── 2. LLM 호출 ─────────────────────────────────────────────
     depth_modes = ["Light (1-2 turns)", "Standard (3-4 turns)", "Deep (5+ turns)"]
     depth_mode = depth_modes[state.get("socratic_depth", 1)]
     eval_feedback = state.get("evaluation", {}).get("feedback", "")
     is_first_turn = len(messages) <= 1
     history_text = _format_history(messages)
+    pending_quiz = state.get("pending_quiz", [])
+    quiz_in_progress = len(pending_quiz) > 0
 
     prompt = ROUTER_PROMPT.format(
         frustration_level=frustration_count,
         depth_mode=depth_mode,
         eval_feedback=eval_feedback,
+        quiz_in_progress=quiz_in_progress,
         history_text=history_text,
         last_message=last_message,
     )
@@ -224,11 +206,12 @@ def router(state: AgentState) -> AgentState:
     if route == "learn" and not active_agents:
         active_agents = ["retrieval", "socratic"]
 
-    # rule-based override: LLM이 learn으로 판단했어도 도구 키워드 있으면 tools로 전환
+    # rule-based override: LLM이 learn으로 판단했어도 도구 키워드 있으면 tools route로 전환
+    # retrieval/socratic을 거칠 필요 없이 바로 tool_agent로 분기
     if route == "learn" and _needs_tools(last_message):
-        if "tools" not in active_agents:
-            active_agents = active_agents + ["tools"]
-            logger.info("도구 키워드 감지 — active_agents에 'tools' 추가.")
+        route = "tools"
+        active_agents = []
+        logger.info("도구 키워드 감지 — route=tools로 강제 전환.")
 
     # state 업데이트
     state["rewritten_query"] = rewritten_query

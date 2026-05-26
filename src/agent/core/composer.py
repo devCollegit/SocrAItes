@@ -53,15 +53,21 @@ def _format_quiz_escape(pending_quiz: list) -> str:
     """pending_quiz의 정답을 규칙 기반으로 포맷한다. LLM 호출 없음."""
     lines = ["## 퀴즈 정답\n"]
     for i, item in enumerate(pending_quiz, 1):
-        answer = item.get("answer", "").upper()
+        answer = item.get("answer", "").strip()
         options = item.get("options", [])
-        # 정답 알파벳을 인덱스로 변환해 선택지 텍스트를 가져온다
-        answer_idx = ord(answer) - ord("A")
-        answer_text = (
-            options[answer_idx] if options and 0 <= answer_idx < len(options) else ""
-        )
-        lines.append(f"{i}. {item.get('question', '')}")
-        lines.append(f"   정답: {answer}. {answer_text}\n")
+        question = item.get("question", "")
+
+        # answer가 단일 알파벳(A~D)이면 인덱스로 변환해 선택지 텍스트 표시
+        if len(answer) == 1 and answer.upper() in "ABCD":
+            letter = answer.upper()
+            idx = ord(letter) - ord("A")
+            answer_text = options[idx] if options and 0 <= idx < len(options) else ""
+            lines.append(f"{i}. {question}")
+            lines.append(f"   정답: {letter}. {answer_text}\n")
+        else:
+            # LLM이 전체 텍스트로 반환한 경우 그대로 표시
+            lines.append(f"{i}. {question}")
+            lines.append(f"   정답: {answer}\n")
     return "\n".join(lines)
 
 

@@ -124,11 +124,10 @@ def _is_quiz_answer(text: str) -> bool:
 def _detect_frustration(text: str) -> bool:
     keywords = [
         "모르겠", "모르겠음", "모르겠어", "모르겠다", "모르겠는데",
-        "어렵", "어려워", "어려움", "어렵다", "어려운데",
+        "어렵", "어려워", "어려움", "어렵다", "어려운데", "어려운",
         "힘들", "힘들어", "힘들다", "힘듦", "힘든데",
         "포기", "못하겠", "못하겠어", "못하겠다", "못하겠음",
         "답답", "헷갈려", "헷갈림", "이해 안", "이해가 안", "이해 안 됨",
-        "그냥 알려줘", "답 알려줘", "답을 알려", "어려운",
     ]
     clean = text.replace(" ", "").lower()
     return any(k.replace(" ", "").lower() in clean for k in keywords)
