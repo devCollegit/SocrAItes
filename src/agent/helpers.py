@@ -206,18 +206,7 @@ def _format_quiz_response(
             continue
 
         source = output.get("source", "template")
-        header = "퀴즈 %d문항을 준비했어요 (출처: %s). 한 번에 풀어보세요." % (
-            len(quiz_items),
-            "강의 자료 기반" if source == "llm_rag" else "기본 템플릿",
-        )
-        lines = [header, ""]
-        for idx, item in enumerate(quiz_items, start=1):
-            question = item.get("question", "질문")
-            options = item.get("options", [])
-            lines.append(f"{idx}. {question}")
-            if isinstance(options, list) and len(options) >= 4:
-                lines += [f"A. {options[0]}", f"B. {options[1]}", f"C. {options[2]}", f"D. {options[3]}"]
-            lines.append("")
-        lines.append("답안은 예: 1:A, 2:B, 3:A, 4:C, 5:D 형태로 보내주세요.")
-        return "\n".join(lines), quiz_items
+        source_label = "강의 자료 기반" if source == "llm_rag" else "기본 템플릿"
+        header = "퀴즈 %d문항을 준비했어요 (%s). 아래에서 풀어보세요!" % (len(quiz_items), source_label)
+        return header, quiz_items
     return None, []

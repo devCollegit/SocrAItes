@@ -252,8 +252,8 @@ document.addEventListener('DOMContentLoaded', () => {
             removeLoadingIndicator(loadingId);
             addMessage(data.answer, 'ai', data.retrieved_docs);
 
-            // Render Quiz UI if quiz_data exists
-            if (data.quiz_data && Array.isArray(data.quiz_data)) {
+            // Render Quiz UI if quiz_data exists and has items
+            if (data.quiz_data && Array.isArray(data.quiz_data) && data.quiz_data.length > 0) {
                 renderQuizUI(data.quiz_data);
             }
 

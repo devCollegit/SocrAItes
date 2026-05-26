@@ -194,16 +194,26 @@ async def chat(request: ChatRequest):
                 metadata_str = json.dumps(metadata_dict, ensure_ascii=False) if metadata_dict else None
                 log_message(session_id, "assistant", answer, metadata=metadata_str)
                 
+                # 이번 턴에 generate_quiz가 실제로 호출된 경우에만 quiz_data 전송
+                quiz_data = []
+                for tr in current_state.get("tool_results", []):
+                    if tr.get("tool") == "generate_quiz" and tr.get("ok"):
+                        output = tr.get("output", {})
+                        if isinstance(output, dict):
+                            quiz_data = output.get("quiz", [])
+                        break
+
                 final_data = {
                     "type": "final_result",
                     "session_id": session_id,
                     "answer": answer,
                     "retrieved_docs": current_state.get("retrieved_docs", []),
-                    "subtask": current_state.get("subtask"),       # 이번 턴 수행한 작업 설명
-                    "route": current_state.get("route"),            # 라우팅 결정값
+                    "subtask": current_state.get("subtask"),
+                    "route": current_state.get("route"),
                     "active_agents": current_state.get("active_agents", []),
                     "tool_results": current_state.get("tool_results", []),
                     "frustration_level": current_state.get("frustration_level", 0),
+                    "quiz_data": quiz_data,
                 }
                 yield f"data: {json.dumps(final_data, ensure_ascii=False)}\n\n"
                 # 참고: 백그라운드 프로필 업데이트는 tool_agent 내부에서
