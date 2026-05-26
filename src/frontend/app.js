@@ -15,13 +15,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const statTurns = document.getElementById('stat-turns');
     const statDocs = document.getElementById('stat-docs');
     const statFrustration = document.getElementById('stat-frustration');
-    const quickChips = document.querySelectorAll('.chip');
+    const quickStartChips = document.getElementById('quick-start-chips');
+    const quickStartEmpty = document.getElementById('quick-start-empty');
     const attachBtn = document.getElementById('attach-btn');
     const pdfUpload = document.getElementById('pdf-upload');
     const registeredDocsList = document.getElementById('registered-docs-list');
     const sessionList = document.getElementById('session-list');
     const scheduleList = document.getElementById('schedule-list');
     const weaknessesList = document.getElementById('weaknesses-list');
+    const openReportBtn = document.getElementById('open-report-btn');
+    const reportModal = document.getElementById('report-modal');
+    const closeReportBtn = document.getElementById('close-report-btn');
+    const reportModalBody = document.getElementById('report-modal-body');
+    const generateReportBtn = document.getElementById('generate-report-btn');
 
     // State
     let messages = [];
@@ -92,14 +98,61 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Quick Start Chips
-    quickChips.forEach(chip => {
-        chip.addEventListener('click', () => {
-            userInput.value = chip.dataset.msg;
+    function escapeHtml(value) {
+        return String(value ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    async function loadPersonalizedChips() {
+        if (!quickStartChips || !quickStartEmpty) return;
+        try {
+            const response = await fetch('/recommend-chips');
+            if (!response.ok) throw new Error('Failed to load chips');
+            const data = await response.json();
+            const chips = Array.isArray(data.chips) ? data.chips : [];
+
+            if (chips.length === 0) {
+                quickStartChips.innerHTML = '';
+                quickStartChips.style.display = 'none';
+                quickStartEmpty.style.display = 'block';
+                return;
+            }
+
+            quickStartEmpty.style.display = 'none';
+            quickStartChips.style.display = 'flex';
+            quickStartChips.innerHTML = chips.map(chip => {
+                const typeClass = chip.type === 'schedule' ? 'chip-schedule' : 'chip-weakness';
+                const label = escapeHtml(chip.label || '추천 학습');
+                const message = escapeHtml(chip.message || '복습 도와줘');
+                const due = chip.due ? `<span class="chip-badge">${escapeHtml(chip.due)}</span>` : '';
+                return `
+                    <button class="chip ${typeClass}" data-msg="${message}">
+                        <span class="chip-text">${label}</span>
+                        ${due}
+                    </button>
+                `;
+            }).join('');
+        } catch (error) {
+            console.error('Error loading personalized chips:', error);
+            quickStartChips.innerHTML = '';
+            quickStartChips.style.display = 'none';
+            quickStartEmpty.style.display = 'block';
+        }
+    }
+
+    if (quickStartChips) {
+        quickStartChips.addEventListener('click', (e) => {
+            const chip = e.target.closest('.chip');
+            if (!chip) return;
+            userInput.value = chip.dataset.msg || '';
             userInput.dispatchEvent(new Event('input'));
             sendMessage();
         });
-    });
+    }
 
     // Send Message
     async function sendMessage() {
@@ -475,6 +528,7 @@ document.addEventListener('DOMContentLoaded', () => {
         loadSessions();
         fetchSchedules();
         fetchWeaknesses();
+        loadPersonalizedChips();
     });
 
     // Fetch and render registered PDF documents
@@ -580,6 +634,8 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         } catch (error) {
             console.error('Error fetching schedules:', error);
+        } finally {
+            loadPersonalizedChips();
         }
     }
 
@@ -635,13 +691,154 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         } catch (error) {
             console.error('Error fetching weaknesses:', error);
+        } finally {
+            loadPersonalizedChips();
         }
+    }
+
+    function renderReportModal(data) {
+        const weaknesses = data.weaknesses || [];
+        const strengths = data.strengths || [];
+        const profile = data.profile_summary || {};
+        const stats = data.stats || {};
+
+        const strengthsHtml = strengths.length > 0
+            ? strengths.slice(0, 8).map(s => `
+                <div class="report-card-item strength">
+                    <span class="report-item-title">${escapeHtml(s.concept)}</span>
+                    <span class="report-item-sub">${escapeHtml(s.details || '이해가 잘 된 개념')}</span>
+                </div>
+            `).join('')
+            : '<div class="report-empty">아직 기록된 강점이 없습니다.</div>';
+
+        const weaknessesHtml = weaknesses.length > 0
+            ? weaknesses.slice(0, 10).map(w => `
+                <div class="report-card-item weakness">
+                    <div class="report-item-main">
+                        <span class="report-item-title">${escapeHtml(w.concept)}</span>
+                        <span class="report-severity sev-${Math.min(5, Math.max(1, Number(w.severity || 1)))}">심각도 ${escapeHtml(w.severity || 1)}</span>
+                    </div>
+                    <div class="report-item-actions">
+                        <button class="report-review-btn" data-concept="${escapeHtml(w.concept)}">복습하기</button>
+                    </div>
+                </div>
+            `).join('')
+            : '<div class="report-empty">현재 등록된 약점이 없습니다.</div>';
+
+        const topCategories = (stats.top_categories || []).length > 0
+            ? stats.top_categories.map(c => `<span class="report-chip">${escapeHtml(c)}</span>`).join(' ')
+            : '<span class="report-empty-inline">분류 데이터 없음</span>';
+
+        reportModalBody.innerHTML = `
+            <section class="report-section">
+                <h3>✅ 잘 이해하고 있는 것</h3>
+                <div class="report-summary">${escapeHtml(profile.strengths_summary || '강점 요약이 아직 없습니다.')}</div>
+                <div class="report-card-list">${strengthsHtml}</div>
+            </section>
+
+            <section class="report-section">
+                <h3>🔴 보완이 필요한 것</h3>
+                <div class="report-summary">${escapeHtml(profile.weaknesses_summary || '약점 요약이 아직 없습니다.')}</div>
+                <div class="report-card-list">${weaknessesHtml}</div>
+            </section>
+
+            <section class="report-section">
+                <h3>📈 학습 통계</h3>
+                <div class="report-stats-grid">
+                    <div class="report-stat"><span class="k">총 약점</span><span class="v">${escapeHtml(stats.total_weaknesses || 0)}</span></div>
+                    <div class="report-stat"><span class="k">총 강점</span><span class="v">${escapeHtml(stats.total_strengths || 0)}</span></div>
+                    <div class="report-stat"><span class="k">최근 7일 약점</span><span class="v">${escapeHtml(stats.recent_7d_weaknesses || 0)}</span></div>
+                </div>
+                <div class="report-categories">${topCategories}</div>
+            </section>
+
+            <section class="report-section" id="report-generated-area"></section>
+        `;
+
+        reportModalBody.querySelectorAll('.report-review-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const concept = btn.dataset.concept;
+                reportModal.style.display = 'none';
+                userInput.value = `${concept} 개념을 소크라테스식으로 복습하고 싶어`;
+                userInput.dispatchEvent(new Event('input'));
+                sendMessage();
+            });
+        });
+    }
+
+    async function openReportModal() {
+        if (!reportModal || !reportModalBody) return;
+        reportModal.style.display = 'flex';
+        reportModalBody.innerHTML = '<div class="report-loading">리포트 데이터를 불러오는 중...</div>';
+        try {
+            const response = await fetch('/report-data');
+            if (!response.ok) throw new Error('Failed to fetch report data');
+            const data = await response.json();
+            renderReportModal(data);
+        } catch (error) {
+            console.error('Error loading report modal:', error);
+            reportModalBody.innerHTML = '<div class="report-empty">리포트 데이터를 불러오지 못했습니다.</div>';
+        }
+    }
+
+    async function generateMetacognitiveReport() {
+        if (!generateReportBtn || !reportModalBody) return;
+        const oldText = generateReportBtn.textContent;
+        generateReportBtn.disabled = true;
+        generateReportBtn.textContent = '생성 중...';
+
+        try {
+            const response = await fetch('/generate-report', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: 'default' })
+            });
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || 'Report generation failed');
+            }
+            const data = await response.json();
+            const generatedArea = document.getElementById('report-generated-area');
+            if (generatedArea) {
+                generatedArea.innerHTML = `
+                    <h3>🧠 AI 생성 리포트</h3>
+                    <div class="report-markdown">${marked.parse(data.body || '')}</div>
+                `;
+            }
+        } catch (error) {
+            console.error('Error generating report:', error);
+            const generatedArea = document.getElementById('report-generated-area');
+            if (generatedArea) {
+                generatedArea.innerHTML = `<div class="report-empty">리포트 생성 실패: ${escapeHtml(error.message)}</div>`;
+            }
+        } finally {
+            generateReportBtn.disabled = false;
+            generateReportBtn.textContent = oldText;
+        }
+    }
+
+    if (openReportBtn) {
+        openReportBtn.addEventListener('click', openReportModal);
+    }
+    if (closeReportBtn && reportModal) {
+        closeReportBtn.addEventListener('click', () => {
+            reportModal.style.display = 'none';
+        });
+        reportModal.addEventListener('click', (e) => {
+            if (e.target === reportModal) {
+                reportModal.style.display = 'none';
+            }
+        });
+    }
+    if (generateReportBtn) {
+        generateReportBtn.addEventListener('click', generateMetacognitiveReport);
     }
 
     // Initial fetch of registered documents
     fetchRegisteredDocuments();
     fetchSchedules();
     fetchWeaknesses();
+    loadPersonalizedChips();
 
     // 세션 목록 불러오기
     async function loadSessions() {
