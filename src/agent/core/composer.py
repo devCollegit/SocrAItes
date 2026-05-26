@@ -44,9 +44,17 @@ def _extract_answer(text: str) -> str:
 
 def _extract_question(text: str) -> str:
     """socratic_agent 출력에서 <question> 태그 내용을 추출한다.
-    태그가 없으면 전체 텍스트를 fallback으로 반환한다."""
+    태그가 없으면 <answer> 이후 텍스트만, 그것도 없으면 마지막 문장만 반환한다."""
     match = re.search(r"<question>(.*?)</question>", text, re.DOTALL)
-    return match.group(1).strip() if match else text
+    if match:
+        return match.group(1).strip()
+    # <answer> 태그가 있으면 그 이후 텍스트에서 질문 문장만 추출
+    after_answer = re.sub(r"<answer>.*?</answer>", "", text, flags=re.DOTALL).strip()
+    if after_answer:
+        return after_answer
+    # 최후 fallback: 마지막 문장만 반환
+    sentences = [s.strip() for s in re.split(r"(?<=[.?!])\s+", text) if s.strip()]
+    return sentences[-1] if sentences else text
 
 
 def _format_quiz_escape(pending_quiz: list) -> str:
@@ -148,13 +156,20 @@ def composer(state: AgentState) -> AgentState:
         _log_trace(step="Composer", purpose="도구 결과 합성.", response=state["response"])
         return state
 
-    # ── 5. learn route → <question> 추출 ─────────────────────────
-    # socratic_agent 출력에서 <question> 태그 내용만 학생에게 노출한다.
+    # ── 5. learn route → <question> 또는 <answer> 추출 ──────────
+    # force_explain=True(반문 한도 초과)이면 <answer>를, 아니면 <question>을 노출한다.
     if tutor_response:
-        state["response"] = _extract_question(tutor_response)
+        if state.get("force_explain"):
+            extracted = _extract_answer(tutor_response)
+            state["response"] = extracted or _extract_question(tutor_response)
+            state["force_explain"] = False
+            logger.info("반문 한도 초과 → <answer> 추출 완료.")
+            _log_trace(step="Composer", purpose="한도 초과: <answer> 추출.", decision="<answer> → response.")
+        else:
+            state["response"] = _extract_question(tutor_response)
+            logger.info("learn route → <question> 추출 완료.")
+            _log_trace(step="Composer", purpose="learn: <question> 추출.", decision="<question> → response.")
         state["tool_results"] = []
-        logger.info("learn route → <question> 추출 완료.")
-        _log_trace(step="Composer", purpose="learn: <question> 추출.", decision="<question> → response.")
         return state
 
     # ── 6. 폴백 LLM 생성 ─────────────────────────────────────────

@@ -98,6 +98,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Depth Selection
+    const depthAvatars = { 0: '💡', 1: 'S', 2: '🔥' };
     depthBtns.forEach(btn => {
         btn.addEventListener('click', () => {
             depthBtns.forEach(b => b.classList.remove('active'));
@@ -299,7 +300,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const avatarDiv = document.createElement('div');
         avatarDiv.className = 'msg-avatar';
-        avatarDiv.innerText = role === 'ai' ? 'S' : (role === 'system' ? '⚙️' : 'U');
+        avatarDiv.innerText = role === 'ai' ? (depthAvatars[socraticDepth] ?? 'S') : (role === 'system' ? '⚙️' : 'U');
 
         const bodyDiv = document.createElement('div');
         bodyDiv.className = 'message-body';

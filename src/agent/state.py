@@ -71,6 +71,7 @@ class AgentState(TypedDict, total=False):
     # ── 기타 ─────────────────────────────────────────────────────
     tool_results: List[Dict[str, Any]]
     pending_quiz: List[Dict[str, Any]]
+    force_explain: bool
 
 
 # 그래프 실행 전 초기 상태값.
@@ -93,4 +94,5 @@ DEFAULT_STATE: AgentState = {
     "evaluation": {},
     "tool_results": [],
     "pending_quiz": [],
+    "force_explain": False,
 }
