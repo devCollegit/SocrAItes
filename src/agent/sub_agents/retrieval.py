@@ -1,6 +1,10 @@
-"""Sub Agent — Retrieval: queries Elasticsearch vector store."""
+"""Sub Agent — Retrieval: Elasticsearch 벡터 스토어에서 강의 자료를 검색.
+
+active_agents에 "retrieval"이 포함된 경우에만 실행한다.
+검색 쿼리는 router가 생성한 rewritten_query를 사용한다.
+"""
+
 import logging
-from typing import List, Dict, Any
 
 from src.agent.state import AgentState
 from src.agent.helpers import _log_trace
@@ -10,24 +14,34 @@ logger = logging.getLogger("SocrAItes.Agent")
 
 
 def retrieval_agent(state: AgentState) -> AgentState:
-    """Retrieves relevant lecture chunks when 'retrieval' is in sub_agents."""
+    """벡터 스토어에서 관련 강의 청크를 검색한다. 'retrieval'이 active_agents에 없으면 스킵."""
     logger.info("--- [Retrieval Agent] Step ---")
-    if "retrieval" not in state.get("sub_agents", ["retrieval"]):
+
+    # active_agents에 "retrieval"이 없으면 이 턴은 검색 불필요
+    if "retrieval" not in state.get("active_agents", ["retrieval"]):
         state["retrieved_docs"] = []
-        _log_trace(step="RetrievalAgent", purpose="Skipped.", decision="Not in sub_agents.")
+        _log_trace(
+            step="RetrievalAgent",
+            purpose="스킵.",
+            decision="active_agents에 'retrieval' 없음.",
+        )
         return state
 
-    query = state.get("contextualized_query", "") or (
+    # router가 재작성한 쿼리 사용, 없으면 원본 메시지 폴백
+    query = state.get("rewritten_query", "") or (
         state["messages"][-1]["content"] if state.get("messages") else ""
     )
     results = vectorstore.query(query, k=5)
     state["retrieved_docs"] = results
 
-    logger.info(f"Retrieved {len(results)} chunks.")
+    logger.info(f"검색 완료: {len(results)}개 청크.")
     _log_trace(
         step="RetrievalAgent",
-        purpose="Query Elasticsearch and return relevant lecture chunks.",
+        purpose="Elasticsearch 쿼리로 관련 강의 청크 반환.",
         inputs={"Query": query},
-        decision={"Count": len(results), "Snippets": [r["text"][:80] + "..." for r in results]},
+        decision={
+            "Count": len(results),
+            "Snippets": [r["text"][:80] + "..." for r in results],
+        },
     )
     return state

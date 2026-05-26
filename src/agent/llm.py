@@ -19,10 +19,9 @@ else:
     # Mock LLM for testing frontend when API key is missing
     from langchain_core.language_models.fake import FakeListLLM
     llm = FakeListLLM(responses=[
-        '{"contextualized_query": "안녕하세요!", "routing_decision": "DIRECT"}',
+        '{"rewritten_query": "안녕하세요!", "route": "chat", "active_agents": [], "subtask": "인사 응답"}',
         "안녕하세요! 무엇을 공부하고 싶으신가요?",
-        '{"contextualized_query": "CAP 정리에 대해 알고 싶어요.", "routing_decision": "PLAN"}',
-        '{"sub_agents": ["retrieval", "dialogue"], "subtask": "CAP 정리 탐구"}',
+        '{"rewritten_query": "CAP 정리에 대해 알고 싶어요.", "route": "learn", "active_agents": ["retrieval", "socratic"], "subtask": "CAP 정리 탐구"}',
         "How would you explain the CAP theorem in your own words?",
         '{"scores": {"socratic": 4, "grounding": 3, "encouragement": 4, "clarity": 4}, "pass": true, "feedback": ""}',
     ])

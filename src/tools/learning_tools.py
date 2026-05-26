@@ -61,16 +61,6 @@ class WeaknessRecord(BaseModel):
     session_id: str | None = Field(None, description="Optional session ID")
     user_id: str | None = Field("default", description="Optional user ID")
 
-class EscapeResponse(BaseModel):
-    """Parameters for ``escape_to_answer`` tool.
-
-    * ``question`` – the original user question that triggered the escape.
-    * ``answer`` – optional direct answer to provide.
-    """
-
-    question: str = Field(..., description="Original user question")
-    answer: str | None = Field(None, description="Optional direct answer to give")
-
 
 class UserProfileRequest(BaseModel):
     """Parameters for ``update_user_profile`` tool."""
@@ -365,20 +355,6 @@ def save_weakness(request: Dict[str, Any]) -> Dict[str, Any]:
     return res
 
 
-def escape_to_answer(request: Dict[str, Any]) -> Dict[str, Any]:
-    """Immediately provide a direct answer, bypassing Socratic flow.
-    """
-    req = EscapeResponse(**request)
-    logger.info("escape_to_answer called with %s", req)
-    res = {
-        "mode": "direct_answer",
-        "question": req.question,
-        "answer": req.answer,
-        "message": "User requested direct answer mode.",
-    }
-    _log_tool_trace("escape_to_answer", request, res)
-    return res
-
 
 def grade_quiz(quiz_items: List[Dict[str, Any]], user_answers: Dict[int, str]) -> Dict[str, Any]:
     """Auto-grade a quiz.
@@ -442,9 +418,6 @@ def _tool_save_weakness(
 ) -> Dict[str, Any]:
     return save_weakness({"concept": concept, "details": details, "severity": severity, "session_id": session_id, "user_id": user_id})
 
-
-def _tool_escape_to_answer(question: str, answer: str | None = None) -> Dict[str, Any]:
-    return escape_to_answer({"question": question, "answer": answer})
 
 
 def update_user_profile(request: Dict[str, Any]) -> Dict[str, Any]:
@@ -534,7 +507,6 @@ TOOL_MAP = {
     "generate_quiz": generate_quiz,
     "schedule_review": schedule_review,
     "save_weakness": save_weakness,
-    "escape_to_answer": escape_to_answer,
     "update_user_profile": update_user_profile,
     "save_strength": save_strength,
 }
@@ -555,11 +527,6 @@ LANGCHAIN_TOOLS: List[StructuredTool] = [
         name="save_weakness",
         description="Save a weak concept with details and optional severity/session_id.",
         func=_tool_save_weakness,
-    ),
-    StructuredTool.from_function(
-        name="escape_to_answer",
-        description="Switch to direct-answer mode for the current question.",
-        func=_tool_escape_to_answer,
     ),
     StructuredTool.from_function(
         name="update_user_profile",
