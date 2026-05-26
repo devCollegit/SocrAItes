@@ -36,7 +36,7 @@ DB_PATH = os.getenv("SOCRAITES_DB_PATH", os.path.join(DB_DIR, "socraites.db"))
 def get_connection() -> sqlite3.Connection:
     """Return a SQLite connection with WAL mode and foreign keys enabled."""
     os.makedirs(os.path.dirname(os.path.abspath(DB_PATH)), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")

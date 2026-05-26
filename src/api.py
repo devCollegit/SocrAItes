@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
@@ -90,11 +90,11 @@ class ChatResponse(BaseModel):
     answer: str
     session_id: str
     retrieved_docs: List[Any] = []
-    plan: Optional[str] = None
+    subtask: Optional[str] = None
     tool_results: List[Any] = []
 
 @app.post("/chat")
-async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
+async def chat(request: ChatRequest):
     # 세션 생성 또는 기존 세션 사용
     if request.session_id:
         session_id = request.session_id
@@ -163,10 +163,15 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
                     for node_name, node_output in event.items():
                         current_state.update(node_output)
                         
-                        # Serialize safely
+                        # Serialize safely — 클라이언트에 노출할 필드만 선택
                         serializable_output = {}
                         for k, v in node_output.items():
-                            if k in ["contextualized_query", "next_step", "plan", "sub_agents", "draft_answer", "evaluation", "retrieved_docs", "tool_results", "frustration_level", "retry_count"]:
+                            if k in [
+                                "rewritten_query", "route", "subtask", "active_agents",
+                                "response", "evaluation", "retrieved_docs",
+                                "tool_results", "frustration_level", "retry_count",
+                                "tutor_response", "tool_result",
+                            ]:
                                 serializable_output[k] = v
                         
                         data = {
@@ -177,7 +182,7 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
                 
                 # Send final result at the end (with tool_results)
-                answer = current_state.get("draft_answer", "I'm sorry, I couldn't formulate a response.")
+                answer = current_state.get("response", "I'm sorry, I couldn't formulate a response.")
                 
                 # assistant 응답 DB 저장 (metadata 포함)
                 metadata_dict = {}
@@ -194,24 +199,15 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
                     "session_id": session_id,
                     "answer": answer,
                     "retrieved_docs": current_state.get("retrieved_docs", []),
-                    "plan": current_state.get("plan"),
+                    "subtask": current_state.get("subtask"),       # 이번 턴 수행한 작업 설명
+                    "route": current_state.get("route"),            # 라우팅 결정값
+                    "active_agents": current_state.get("active_agents", []),
                     "tool_results": current_state.get("tool_results", []),
-                    "frustration_level": current_state.get("frustration_level", 0)
+                    "frustration_level": current_state.get("frustration_level", 0),
                 }
                 yield f"data: {json.dumps(final_data, ensure_ascii=False)}\n\n"
-
-                # Trigger background diagnosis asynchronously after SSE ends
-                try:
-                    full_history = []
-                    for m in initial_messages:
-                        full_history.append({"role": m["role"], "content": m["content"]})
-                    full_history.append({"role": "assistant", "content": answer})
-                    
-                    from src.agent.sub_agents.diagnosis import run_background_diagnosis
-                    background_tasks.add_task(run_background_diagnosis, session_id, user_id, full_history)
-                    logger.info(f"[/chat] Enqueued background diagnosis task for session={session_id}, user={user_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to queue background diagnosis: {e}")
+                # 참고: 백그라운드 프로필 업데이트는 tool_agent 내부에서
+                # threading.Thread(daemon=True)로 처리되므로 여기서 별도 트리거 불필요.
             except Exception as e:
                 logger.error(f"[/chat] Stream Error: {e}")
                 yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"
@@ -609,11 +605,14 @@ async def submit_quiz(payload: dict):
     }
     """
     try:
-        from src.tools.learning_tools import grade_quiz
-        
+        from src.tools.learning_tools import grade_quiz, save_strength
+
         quiz_items = payload.get("quiz_items", [])
         user_answers_raw = payload.get("user_answers", {})
-        
+        topic = payload.get("topic", "")
+        session_id = payload.get("session_id")
+        user_id = payload.get("user_id", "default")
+
         # Convert user_answers keys to int ("0" -> 0)
         user_answers = {}
         for key, val in user_answers_raw.items():
@@ -621,15 +620,28 @@ async def submit_quiz(payload: dict):
                 user_answers[int(key)] = val.upper()
             except (ValueError, AttributeError):
                 pass
-        
+
         logger.info(f"[/submit_quiz] Grading {len(quiz_items)} questions, {len(user_answers)} answers")
-        
+
         result = grade_quiz(quiz_items, user_answers)
-        
+
         logger.info(f"[/submit_quiz] Result: score={result.get('score')}, suggest_weakness={result.get('suggest_weakness')}")
-        
+
+        if result.get("score", 0) >= 80 and topic:
+            strength_id = save_strength({
+                "concept": topic,
+                "details": f"퀴즈 {result['score']}점 달성 ({result['correct']}/{result['total']} 정답)",
+                "session_id": session_id,
+                "user_id": user_id,
+            })
+            result["strength_saved"] = True
+            result["strength_id"] = strength_id
+            logger.info(f"[/submit_quiz] save_strength called: topic={topic}, score={result['score']}, id={strength_id}")
+        else:
+            result["strength_saved"] = False
+
         return result
-        
+
     except Exception as e:
         logger.error(f"[/submit_quiz] Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
