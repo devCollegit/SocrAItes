@@ -42,11 +42,36 @@ def _extract_answer(text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def _extract_question(text: str) -> str:
-    """socratic_agent 출력에서 <question> 태그 내용을 추출한다.
-    태그가 없으면 전체 텍스트를 fallback으로 반환한다."""
-    match = re.search(r"<question>(.*?)</question>", text, re.DOTALL)
-    return match.group(1).strip() if match else text
+def _extract_feedback(text: str) -> str:
+    """socratic_agent 출력에서 <feedback> 태그 내용을 추출한다.
+    비어있거나 메타 코멘트(피드백 없음 안내 등)면 빈 문자열을 반환한다."""
+    match = re.search(r"<feedback>(.*?)</feedback>", text, re.DOTALL)
+    if not match:
+        return ""
+    feedback = match.group(1).strip()
+    # LLM이 "피드백 없음" 류의 메타 코멘트를 쓴 경우 무시
+    meta_signals = ["피드백을 제공할 수 없", "답변이 없", "첫 번째 질문", "피드백 없음"]
+    if any(s in feedback for s in meta_signals):
+        return ""
+    return feedback
+
+
+def _extract_question(text: str, has_prior_answer: bool = True) -> str:
+    """socratic_agent 출력에서 <feedback> + <question> 태그 내용을 합쳐서 반환한다.
+    has_prior_answer=False이면 feedback을 무조건 생략한다.
+    태그가 없으면 <answer> 이후 텍스트만, 그것도 없으면 마지막 문장만 반환한다."""
+    feedback = _extract_feedback(text) if has_prior_answer else ""
+    q_match = re.search(r"<question>(.*?)</question>", text, re.DOTALL)
+    if q_match:
+        question = q_match.group(1).strip()
+        return (f"{feedback}\n\n{question}" if feedback else question).strip()
+    # <answer> 태그가 있으면 그 이후 텍스트에서 질문 문장만 추출
+    after_answer = re.sub(r"<answer>.*?</answer>", "", text, flags=re.DOTALL).strip()
+    if after_answer:
+        return after_answer
+    # 최후 fallback: 마지막 문장만 반환
+    sentences = [s.strip() for s in re.split(r"(?<=[.?!])\s+", text) if s.strip()]
+    return sentences[-1] if sentences else text
 
 
 def _format_quiz_escape(pending_quiz: list) -> str:
@@ -148,13 +173,28 @@ def composer(state: AgentState) -> AgentState:
         _log_trace(step="Composer", purpose="도구 결과 합성.", response=state["response"])
         return state
 
-    # ── 5. learn route → <question> 추출 ─────────────────────────
-    # socratic_agent 출력에서 <question> 태그 내용만 학생에게 노출한다.
+    # ── 5. learn route → <question> 또는 <answer> 추출 ──────────
+    # force_explain=True(반문 한도 초과)이면 <answer>를, 아니면 <question>을 노출한다.
     if tutor_response:
-        state["response"] = _extract_question(tutor_response)
+        # 직전 메시지가 assistant → user 순서일 때만 feedback 표시
+        # (첫 질문이거나 토픽이 바뀐 직후에는 feedback 없음)
+        msgs = history[:-1]  # 현재 user 메시지 제외
+        has_prior_answer = (
+            len(msgs) >= 2
+            and msgs[-1]["role"] == "user"
+            and any(m["role"] == "assistant" for m in msgs)
+        )
+        if state.get("force_explain"):
+            extracted = _extract_answer(tutor_response)
+            state["response"] = extracted or _extract_question(tutor_response, has_prior_answer=False)
+            state["force_explain"] = False
+            logger.info("반문 한도 초과 → <answer> 추출 완료.")
+            _log_trace(step="Composer", purpose="한도 초과: <answer> 추출.", decision="<answer> → response.")
+        else:
+            state["response"] = _extract_question(tutor_response, has_prior_answer=has_prior_answer)
+            logger.info("learn route → <question> 추출 완료.")
+            _log_trace(step="Composer", purpose="learn: <question> 추출.", decision="<question> → response.")
         state["tool_results"] = []
-        logger.info("learn route → <question> 추출 완료.")
-        _log_trace(step="Composer", purpose="learn: <question> 추출.", decision="<question> → response.")
         return state
 
     # ── 6. 폴백 LLM 생성 ─────────────────────────────────────────
