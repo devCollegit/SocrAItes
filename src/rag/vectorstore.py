@@ -87,7 +87,8 @@ def add_documents(docs: List[str], metadatas: List[dict] | None = None, ids: Lis
         for doc, meta, id_, vector in zip(docs, metadatas, ids, vectors)
     ]
 
-    success, _ = bulk(client, actions, raise_on_error=False)
+    # Wait for refresh so newly uploaded docs are immediately visible to listing APIs.
+    success, _ = bulk(client, actions, raise_on_error=False, refresh="wait_for")
     return success
 
 
