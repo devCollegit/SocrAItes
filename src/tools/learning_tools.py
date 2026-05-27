@@ -133,6 +133,7 @@ def _parse_quiz_json(raw: str) -> list | None:
     """Extract and parse a JSON array from raw LLM output.
     
     Also cleans up option text by removing letter prefixes (A., B., etc.)
+    Normalises the ``answer`` field to a single letter (A/B/C/D).
     """
     # Strip markdown fences if present
     raw = re.sub(r"```(?:json)?", "", raw).strip()
@@ -143,16 +144,36 @@ def _parse_quiz_json(raw: str) -> list | None:
     try:
         items = json.loads(match.group(0))
         if isinstance(items, list) and items:
-            # Clean up options: remove "A.", "B.", "C.", "D." prefixes if present
+            letter_map = {chr(65 + i): chr(65 + i) for i in range(4)}  # A-D
             for item in items:
+                # Clean up options: remove "A.", "B.", "C.", "D." prefixes if present
                 if "options" in item and isinstance(item["options"], list):
                     cleaned_options = []
                     for opt in item["options"]:
-                        # Remove leading "A. ", "B. ", etc.
                         opt_str = str(opt).strip()
                         cleaned = re.sub(r"^[A-D]\.\s*", "", opt_str)
                         cleaned_options.append(cleaned)
                     item["options"] = cleaned_options
+
+                # Normalise answer to A/B/C/D
+                raw_answer = str(item.get("answer", "")).strip()
+                if raw_answer.upper() in letter_map:
+                    # Already a single letter — just uppercase it
+                    item["answer"] = raw_answer.upper()
+                elif item.get("options"):
+                    # LLM returned the full option text — find its index
+                    opts = item["options"]
+                    raw_answer_stripped = re.sub(r"^[A-D]\.\s*", "", raw_answer).strip()
+                    matched_idx = None
+                    for idx, opt in enumerate(opts):
+                        if opt.strip() == raw_answer_stripped or opt.strip() == raw_answer:
+                            matched_idx = idx
+                            break
+                    if matched_idx is not None and matched_idx < 4:
+                        item["answer"] = chr(65 + matched_idx)
+                    else:
+                        # Fallback: keep as-is (grade_quiz will handle it)
+                        item["answer"] = raw_answer
             return items
     except json.JSONDecodeError:
         pass
@@ -373,9 +394,23 @@ def grade_quiz(quiz_items: List[Dict[str, Any]], user_answers: Dict[int, str]) -
     feedback_details = []
     
     for i, quiz_item in enumerate(quiz_items):
-        correct_answer = quiz_item.get("answer", "").upper()
+        raw_correct = str(quiz_item.get("answer", "")).strip()
+        options = quiz_item.get("options", [])
+
+        # Normalise answer to A/B/C/D if LLM returned full option text
+        if raw_correct.upper() in {"A", "B", "C", "D"}:
+            correct_answer = raw_correct.upper()
+        else:
+            # Search for matching option text
+            raw_stripped = re.sub(r"^[A-D]\.\s*", "", raw_correct).strip()
+            correct_answer = raw_correct.upper()  # fallback
+            for idx, opt in enumerate(options):
+                if str(opt).strip() == raw_stripped or str(opt).strip() == raw_correct:
+                    correct_answer = chr(65 + idx)
+                    break
+
         user_answer = str(user_answers.get(i, "")).upper() if i in user_answers else ""
-        
+
         is_correct = user_answer == correct_answer
         if is_correct:
             correct += 1
