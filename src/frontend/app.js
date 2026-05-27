@@ -98,7 +98,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Depth Selection
-    const depthAvatars = { 0: '💡', 1: 'S', 2: '🔥' };
+    const depthAvatars = { 0: '💡', 1: '🔍', 2: '🔥' };
+    const depthClasses = { 0: 'depth-light', 1: 'depth-standard', 2: 'depth-deep' };
     depthBtns.forEach(btn => {
         btn.addEventListener('click', () => {
             depthBtns.forEach(b => b.classList.remove('active'));
@@ -300,7 +301,12 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const avatarDiv = document.createElement('div');
         avatarDiv.className = 'msg-avatar';
-        avatarDiv.innerText = role === 'ai' ? (depthAvatars[socraticDepth] ?? 'S') : (role === 'system' ? '⚙️' : 'U');
+        if (role === 'ai') {
+            avatarDiv.innerText = depthAvatars[socraticDepth] ?? '🔍';
+            avatarDiv.classList.add(depthClasses[socraticDepth] ?? 'depth-standard');
+        } else {
+            avatarDiv.innerText = role === 'system' ? '⚙️' : 'U';
+        }
 
         const bodyDiv = document.createElement('div');
         bodyDiv.className = 'message-body';

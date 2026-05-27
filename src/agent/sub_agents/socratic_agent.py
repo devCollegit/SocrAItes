@@ -22,19 +22,55 @@ from src.agent.helpers import _log_trace, _is_summary_request
 
 logger = logging.getLogger("SocrAItes.Agent")
 
+
+def _count_turns_since_topic_start(history: list, last_msg: str) -> int:
+    """LLM으로 현재 메시지가 새 토픽인지 판단 후 해당 토픽의 Tutor 반문 횟수를 반환."""
+    if len(history) <= 1:
+        return 0
+
+    # 최근 6개 메시지만 사용해 비용 최소화
+    recent = history[-6:]
+    history_text = "\n".join(
+        f"{'Student' if m['role'] == 'user' else 'Tutor'}: {m['content']}"
+        for m in recent[:-1]  # 마지막 유저 메시지 제외
+    )
+
+    prompt = (
+        "아래는 최근 대화 히스토리와 학생의 새 메시지야.\n\n"
+        f"대화 히스토리:\n{history_text}\n\n"
+        f"학생의 새 메시지: \"{last_msg}\"\n\n"
+        "학생의 새 메시지가 이전 대화와 다른 새로운 학습 토픽을 시작하는가?\n"
+        "새 토픽이면 'NEW', 기존 대화의 연속이거나 잡담이면 'SAME'만 출력해."
+    )
+    try:
+        result = _get_content(llm.invoke([HumanMessage(content=prompt)])).strip().upper()
+        is_new_topic = "NEW" in result
+    except Exception:
+        is_new_topic = False
+
+    if is_new_topic:
+        return 0
+
+    # 기존 토픽 연속 — 현재 히스토리에서 Tutor 반문 횟수 카운트
+    return sum(1 for m in history if m["role"] == "assistant")
+
 # ──────────────────────────────────────────────────────────────────────────────
 # 프롬프트
 # ──────────────────────────────────────────────────────────────────────────────
 
 SOCRATIC_PROMPT = """You are SocrAItes, a world-class Socratic tutor.
 
-Your response MUST always contain two clearly separated sections in this exact format:
+Your response MUST always contain three clearly separated sections in this exact format:
 
 <answer>
 [강의 자료에 근거한 정확한 직접 정답. 학생이 이해하기 쉽게 한국어로 작성.]
 </answer>
+<feedback>
+[학생의 직전 답변에 대한 피드백. 정답/부분정답/오답 여부를 한 문장으로 명확히 밝힌다.
+학생의 직전 발화가 없거나 처음 질문인 경우 반드시 아무것도 쓰지 말고 태그만 남긴다: <feedback></feedback>]
+</feedback>
 <question>
-[학생이 스스로 answer에 도달하도록 유도하는 소크라테스식 질문/힌트. 한국어로 작성.]
+[다음 소크라테스식 질문 한 개. feedback 없이 질문만 작성.]
 </question>
 
 <answer> 작성 규칙:
@@ -46,7 +82,18 @@ Your response MUST always contain two clearly separated sections in this exact f
 - 학생이 이미 알 법한 더 단순한 선행 개념에서 출발한다. 모르는 개념을 바로 묻지 말고 거슬러 올라가서 시작한다.
   예) LoRA를 모른다면 → "파라미터를 많이 학습하면 어떤 문제가 생길 것 같아요?"
 - 예/아니오로 끝나는 질문 금지 — 학생이 자기 말로 설명하도록 유도하는 형태로 묻는다.
-- 학생 답변이 틀리거나 불완전하면 틀렸다고 하지 말고, 맞는 부분을 먼저 인정한 뒤 더 생각해볼 지점을 짚는다.
+- 학생 답변이 있으면 반드시 첫 문장에서 맞고 틀림을 명확히 피드백한 뒤 질문으로 넘어간다.
+  이전 질문을 무시하고 바로 새 질문을 던지는 것은 금지.
+  ✓ 정답 → "정확해요! [핵심 개념명]을 잘 짚었어요. 그렇다면..." 으로 이어서 심화
+  ✓ 부분 정답 → "좋은 접근이에요. [맞는 부분]은 맞는데, [빠진 부분]도 생각해보면..."
+  ✓ 틀린 방향 → "흥미로운 생각이에요. 그런데 [부분]을 다시 생각해보면..." 으로 재고 유도
+  ✓ "모르겠어", "모르겠다", "몰라" 등 모른다는 표현 → 질문을 절반 이하로 쪼개거나,
+    정답의 첫 번째 단서(가장 쉬운 부분)만 힌트로 주고 그것에 대해서만 묻는다.
+    같은 질문을 다른 말로 반복하는 것은 금지.
+  ✓ 완전히 엉뚱한 답 → 질문을 더 작게 쪼개서 다시 물어본다
+- 학생 답변의 어느 부분이 맞고 어느 부분이 부족한지 내부적으로 판단한 뒤 질문을 구성하라.
+- 질문은 반드시 정답 방향으로 한 발짝 가까워지도록 설계하라. 학생이 그 질문에 답하면
+  자연스럽게 정답에 가까워져야 한다. 막연히 "생각해보세요" 식의 질문은 금지.
 - 절대 금지: 학생이 실제로 말하지 않은 내용을 "~라고 했는데", "~라고 하셨는데" 형태로 인용하지 말 것. 오직 학생이 직접 입력한 텍스트만 참조할 것.
 - frustration_level >= 2이면: 질문 대신 구체적인 예시를 하나 들고 "이 예시에서 X는 어떤 역할을 하는 것 같나요?" 식으로 범위를 좁혀서 묻는다.
 - 한 개념이 충분히 이해된 후에만 다음 개념으로 넘어간다. 넘어갈 때는 "방금 이해한 X와 연결해서 생각해보면..." 으로 브리지를 만든다.
@@ -157,8 +204,8 @@ def socratic_agent(state: AgentState) -> AgentState:
         else ""
     )
 
-    # ── 현재까지 Tutor가 반문한 횟수 계산 (코드에서 직접 산출) ────
-    tutor_question_count = sum(1 for m in history if m["role"] == "assistant")
+    # ── LLM 기반 토픽 변경 감지 후 반문 횟수 산출 ───────────────
+    tutor_question_count = _count_turns_since_topic_start(history, last_msg)
     _MAX_TURNS = {0: 2, 1: 4, 2: 6}
     max_turns = _MAX_TURNS.get(depth, 4)
     turns_left = max_turns - tutor_question_count
