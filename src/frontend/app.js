@@ -478,7 +478,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Event Listeners
     sendBtn.addEventListener('click', sendMessage);
     userInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
             e.preventDefault();
             sendMessage();
         }
