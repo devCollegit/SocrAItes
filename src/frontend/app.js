@@ -125,6 +125,66 @@ document.addEventListener('DOMContentLoaded', () => {
             .replace(/'/g, '&#39;');
     }
 
+    function showActionToast(message) {
+        const toast = document.createElement('div');
+        toast.className = 'action-toast';
+        toast.textContent = message;
+        document.body.appendChild(toast);
+        requestAnimationFrame(() => toast.classList.add('visible'));
+        setTimeout(() => {
+            toast.classList.remove('visible');
+            setTimeout(() => toast.remove(), 180);
+        }, 1400);
+    }
+
+    async function copyToClipboard(text) {
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                await navigator.clipboard.writeText(text);
+                return true;
+            }
+        } catch (e) {
+            console.warn('Clipboard API failed:', e);
+        }
+
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            ta.remove();
+            return true;
+        } catch (e) {
+            console.warn('execCommand copy failed:', e);
+            return false;
+        }
+    }
+
+    async function shareQuestion(text) {
+        const sharePayload = {
+            title: 'SocrAItes 질문 공유',
+            text: text,
+            url: window.location.href,
+        };
+
+        try {
+            if (navigator.share) {
+                await navigator.share(sharePayload);
+                showActionToast('질문을 공유했어요.');
+                return;
+            }
+        } catch (e) {
+            // User cancelled share sheet; no error toast needed.
+            if (e && e.name === 'AbortError') return;
+        }
+
+        const copied = await copyToClipboard(`${text}\n\n${window.location.href}`);
+        showActionToast(copied ? '공유 링크를 복사했어요.' : '공유 실패: 권한을 확인해 주세요.');
+    }
+
     async function loadPersonalizedChips() {
         if (!quickStartChips || !quickStartEmpty) return;
         try {
@@ -275,7 +335,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Render Quiz UI if quiz_data exists and has items
             if (data.quiz_data && Array.isArray(data.quiz_data) && data.quiz_data.length > 0) {
-                renderQuizUI(data.quiz_data);
+                const quizTopic = data.topic || data.quiz_topic || text;
+                renderQuizUI(data.quiz_data, quizTopic);
             }
 
             // Update Plan
@@ -393,6 +454,53 @@ document.addEventListener('DOMContentLoaded', () => {
             refsDiv.appendChild(toggleBtn);
             refsDiv.appendChild(listDiv);
             bodyDiv.appendChild(refsDiv);
+        }
+
+        if (role === 'user') {
+            const actionDiv = document.createElement('div');
+            actionDiv.className = 'message-actions';
+            actionDiv.innerHTML = `
+                <button class="msg-action-btn" data-action="copy" title="질문 복사" aria-label="질문 복사">
+                    <svg viewBox="0 0 20 20" fill="currentColor"><path d="M6 2a2 2 0 00-2 2v8a2 2 0 002 2h8a2 2 0 002-2V4a2 2 0 00-2-2H6z"/><path d="M4 6a1 1 0 00-1 1v9a2 2 0 002 2h9a1 1 0 100-2H5V7a1 1 0 00-1-1z"/></svg>
+                </button>
+                <button class="msg-action-btn" data-action="share" title="질문 공유" aria-label="질문 공유">
+                    <svg viewBox="0 0 20 20" fill="currentColor"><path d="M15 8a3 3 0 10-2.83-4H12a3 3 0 00.17 1L7.91 7.13a3 3 0 100 5.74l4.26 2.13A3 3 0 1013 13a3 3 0 00-.17 1l-4.26-2.13a3.02 3.02 0 000-3.74l4.26-2.13c.52.6 1.29 1 2.17 1z"/></svg>
+                </button>
+                <button class="msg-action-btn" data-action="retry" title="다시 질문" aria-label="다시 질문">
+                    <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 11-1.06-5.402l.374.373V4a1 1 0 112 0v4.5a1 1 0 01-1 1h-4.5a1 1 0 010-2h2.184l-.311-.31a3.5 3.5 0 10.675 3.438 1 1 0 011.938.296z" clip-rule="evenodd"/></svg>
+                </button>
+            `;
+
+            actionDiv.querySelectorAll('.msg-action-btn').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const action = btn.dataset.action;
+                    const qText = String(text || '').trim();
+                    if (!qText) return;
+
+                    if (action === 'copy') {
+                        const copied = await copyToClipboard(qText);
+                        showActionToast(copied ? '질문을 복사했어요.' : '복사 실패: 권한을 확인해 주세요.');
+                        return;
+                    }
+                    if (action === 'share') {
+                        await shareQuestion(qText);
+                        return;
+                    }
+                    if (action === 'retry') {
+                        if (isThinking) {
+                            showActionToast('현재 답변 생성 중입니다. 잠시 후 다시 시도해 주세요.');
+                            return;
+                        }
+                        userInput.value = qText;
+                        userInput.dispatchEvent(new Event('input'));
+                        sendMessage();
+                    }
+                });
+            });
+
+            bodyDiv.appendChild(actionDiv);
         }
 
         msgDiv.appendChild(avatarDiv);
@@ -838,11 +946,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 .slice(0, 5)
                 .map(w => ({ ...w, priority_score: Number(w.severity || 1) }));
 
-        const maxPriorityScore = Math.max(
-            1,
-            ...topPriority.map(w => Number(w.priority_score || w.severity || 1))
-        );
-
         const strengthsHtml = strengths.length > 0
             ? strengths.slice(0, 8).map(s => `
                 <div class="report-card-item strength">
@@ -855,21 +958,28 @@ document.addEventListener('DOMContentLoaded', () => {
         const weaknessesHtml = topPriority.length > 0
             ? topPriority.map(w => {
                 const severity = Math.min(5, Math.max(1, Number(w.severity || 1)));
-                const rawScore = Number(w.priority_score || w.severity || 1);
-                const score = Number.isFinite(rawScore) ? rawScore : Number(w.severity || 1);
-                const ratio = Math.max(12, Math.round((score / maxPriorityScore) * 100));
+                const priorityLabel = severity >= 4
+                    ? '집중 보완'
+                    : severity === 3
+                        ? '중요 보완'
+                        : '기초 점검';
+                const severityText = severity >= 4 ? '높음' : severity === 3 ? '중간' : '낮음';
+                const detailText = String(w.details || '').trim() || `${w.concept} 개념의 핵심 정의와 적용 맥락 복습이 필요합니다.`;
+                const shortDetail = detailText.length > 88 ? `${detailText.slice(0, 88)}...` : detailText;
                 return `
-                <div class="report-card-item weakness">
-                    <div class="report-item-main">
-                        <span class="report-item-title">${escapeHtml(w.concept)}</span>
-                        <span class="report-severity sev-${severity}">심각도 ${escapeHtml(w.severity || 1)}</span>
-                    </div>
-                    <div class="report-priority-row">
-                        <span class="report-priority-score">${escapeHtml(score.toFixed(2))}</span>
-                        <div class="report-priority-track">
-                            <div class="report-priority-fill" style="width:${ratio}%"></div>
+                <div class="report-card-item weakness report-weakness-card">
+                    <div class="report-weakness-top">
+                        <div class="report-weakness-title-wrap">
+                            <span class="report-weakness-index">핵심 ${escapeHtml(topPriority.indexOf(w) + 1)}</span>
+                            <span class="report-item-title report-weakness-title">${escapeHtml(w.concept)}</span>
                         </div>
+                        <span class="report-severity sev-${severity}">${severityText}</span>
                     </div>
+                    <div class="report-priority-meta">
+                        <span class="report-priority-rank">우선순위 개념</span>
+                        <span class="report-priority-label sev-${severity}">${priorityLabel}</span>
+                    </div>
+                    <div class="report-weakness-detail">${escapeHtml(shortDetail)}</div>
                     <div class="report-item-actions">
                         <button class="report-review-btn" data-concept="${escapeHtml(w.concept)}">복습하기</button>
                     </div>
@@ -1144,7 +1254,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadSessions();
 
     // Quiz UI Rendering
-    function renderQuizUI(quizItems) {
+    function renderQuizUI(quizItems, quizTopic = '') {
         const quizContainer = document.createElement('div');
         quizContainer.className = 'quiz-container';
         quizContainer.innerHTML = `
@@ -1228,7 +1338,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         quiz_items: quizItems,
-                        user_answers: userAnswers
+                        user_answers: userAnswers,
+                        topic: quizTopic,
+                        session_id: sessionId,
+                        user_id: 'default',
                     })
                 });
 
@@ -1240,7 +1353,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const result = await response.json();
 
                 // Display grading result
-                renderGradingResult(result, quizItems, userAnswers);
+                renderGradingResult(result, quizItems, userAnswers, quizTopic);
 
                 // Re-enable button
                 submitBtn.innerHTML = '다시 풀기';
@@ -1262,12 +1375,13 @@ document.addEventListener('DOMContentLoaded', () => {
         scrollToBottom();
     }
 
-    function renderGradingResult(result, quizItems, userAnswers) {
+    function renderGradingResult(result, quizItems, userAnswers, quizTopic = '') {
         const resultContainer = document.createElement('div');
         resultContainer.className = 'grading-result';
 
         const scorePercentage = result.score || 0;
         const statusEmoji = scorePercentage >= 80 ? '🎉' : scorePercentage >= 60 ? '👍' : '😞';
+        const topicText = String(quizTopic || '').trim() || '퀴즈 주제';
 
         resultContainer.innerHTML = `
             <div class="result-header ${scorePercentage >= 80 ? 'excellent' : scorePercentage >= 60 ? 'good' : 'poor'}">
@@ -1278,7 +1392,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 </div>
             </div>
             <div class="result-message">${result.message}</div>
-            ${result.suggest_weakness ? '<div class="weakness-suggestion">💡 이 주제를 보충학습으로 등록하시겠어요?</div>' : ''}
+            ${result.suggest_weakness ? `<div class="weakness-suggestion">💡 <strong>${escapeHtml(topicText)}</strong> 개념을 보충학습으로 등록하시겠어요?</div>` : ''}
             <div class="result-details">
                 ${result.details.map((detail, idx) => `
                     <div class="detail-item">
@@ -1294,7 +1408,7 @@ document.addEventListener('DOMContentLoaded', () => {
             weaknessBtn.className = 'weakness-suggestion-btn';
             weaknessBtn.innerHTML = '약점 등록하기';
             weaknessBtn.addEventListener('click', () => {
-                userInput.value = '이 주제를 약점으로 등록해줄래?';
+                userInput.value = `${topicText} 개념을 약점으로 등록해줄래? 내가 퀴즈에서 ${result.score}점을 받았어.`;
                 userInput.dispatchEvent(new Event('input'));
                 sendMessage();
             });

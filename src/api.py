@@ -11,6 +11,7 @@ import os
 import logging
 import traceback
 import json
+import re
 
 
 # Load .env file BEFORE anything else (so OPENAI_API_KEY is available)
@@ -431,6 +432,30 @@ def _infer_category(concept: str) -> str:
     return "기타"
 
 
+def _build_live_weakness_summary(weaknesses: List[Dict[str, Any]]) -> str:
+    """Build a lightweight weakness summary from currently active weakness rows."""
+    if not weaknesses:
+        return "현재 등록된 약점이 없습니다."
+    concepts = [str(w.get("concept", "")).strip() for w in weaknesses if str(w.get("concept", "")).strip()]
+    if not concepts:
+        return "현재 등록된 약점이 없습니다."
+    top = concepts[:3]
+    joined = ", ".join(top)
+    return f"현재 우선 보완 개념은 {joined} 입니다. 핵심 정의와 적용 예시를 중심으로 복습이 필요합니다."
+
+
+def _is_summary_aligned_with_weaknesses(summary: str, weaknesses: List[Dict[str, Any]]) -> bool:
+    """Check whether profile summary still aligns with active weakness concepts."""
+    if not summary:
+        return False
+    normalized_summary = summary.lower().replace(" ", "")
+    concepts = [str(w.get("concept", "")).strip().lower().replace(" ", "") for w in weaknesses]
+    concepts = [c for c in concepts if c]
+    if not concepts:
+        return False
+    return any(c in normalized_summary for c in concepts)
+
+
 def _weakness_priority_score(item: dict, now: datetime) -> float:
     """Compute a simple priority score for weaknesses.
 
@@ -514,6 +539,9 @@ async def get_report_data(user_id: str = "default"):
         strengths = get_user_strengths(user_id=user_id, limit=100)
         profile = get_user_profile(user_id=user_id)
 
+        strengths_summary = profile.get("strengths_summary", "")
+        weaknesses_summary = _build_live_weakness_summary(weaknesses)
+
         now = datetime.now(timezone.utc)
         recent_7d_weaknesses = 0
         previous_7d_weaknesses = 0
@@ -566,8 +594,8 @@ async def get_report_data(user_id: str = "default"):
             "weaknesses": weaknesses,
             "strengths": strengths,
             "profile_summary": {
-                "strengths_summary": profile.get("strengths_summary", ""),
-                "weaknesses_summary": profile.get("weaknesses_summary", ""),
+                "strengths_summary": strengths_summary,
+                "weaknesses_summary": weaknesses_summary,
                 "learning_style": profile.get("learning_style", "conceptual"),
             },
             "stats": stats,
@@ -610,13 +638,14 @@ async def generate_report(payload: dict | None = None):
         ] or ["- (기록 없음)"]
 
         priority_lines = [
-            f"- {w.get('concept', '개념')} (score={w.get('priority_score')}, category={w.get('category')})"
+            f"- {w.get('concept', '개념')} (심각도 {w.get('severity', 1)})"
             for w in prioritized[:5]
         ] or ["- (우선순위 데이터 없음)"]
 
         prompt = (
             "당신은 학습 코치입니다. 아래 학습 데이터를 바탕으로 한국어 메타인지 리포트를 마크다운으로 작성하세요.\n"
             "길이는 500~900자 내외로 간결하지만 실행 가능해야 합니다.\n\n"
+            "중요: score=..., category=... 같은 내부 점수/메타데이터 표기는 절대 출력하지 마세요.\n\n"
             "[학습 데이터]\n"
             f"강점 목록:\n{chr(10).join(strengths_lines)}\n\n"
             f"약점 목록:\n{chr(10).join(weakness_lines)}\n\n"
@@ -660,6 +689,11 @@ async def generate_report(payload: dict | None = None):
                 + "\n## 📈 총평\n"
                 + f"약점 {stats.get('total_weaknesses', 0)}개, 강점 {stats.get('total_strengths', 0)}개 기반으로 다음 학습 우선순위를 재정렬해야 합니다."
             )
+
+            # Safety cleanup: strip internal metadata-like notations from generated markdown.
+            generated_body = re.sub(r"\s*\(\s*score\s*=\s*[^\)]*\)", "", generated_body, flags=re.IGNORECASE)
+            generated_body = re.sub(r"\s*\(\s*category\s*=\s*[^\)]*\)", "", generated_body, flags=re.IGNORECASE)
+            generated_body = re.sub(r"\s*\(\s*score\s*=\s*[^,\)]*,\s*category\s*=\s*[^\)]*\)", "", generated_body, flags=re.IGNORECASE)
 
         title = f"메타인지 리포트 ({datetime.now(timezone.utc).strftime('%Y-%m-%d')})"
         report_id = save_report(title=title, body=generated_body, user_id=user_id)
