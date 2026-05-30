@@ -17,7 +17,7 @@ import logging
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.agent.state import AgentState
-from src.agent.llm import llm, _get_content
+from src.agent.llm import llm, llm_strong, _get_content
 from src.agent.helpers import _log_trace, _is_summary_request
 
 logger = logging.getLogger("SocrAItes.Agent")
@@ -250,7 +250,7 @@ def socratic_agent(state: AgentState) -> AgentState:
     )
 
     # ── LLM 호출 ─────────────────────────────────────────────────
-    response = llm.invoke([SystemMessage(content=system_content), HumanMessage(content=last_msg)])
+    response = llm_strong.invoke([SystemMessage(content=system_content), HumanMessage(content=last_msg)])
     tutor_response = _get_content(response)
     state["tutor_response"] = tutor_response
 

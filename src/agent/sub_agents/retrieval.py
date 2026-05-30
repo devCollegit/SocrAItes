@@ -27,11 +27,22 @@ def retrieval_agent(state: AgentState) -> AgentState:
         )
         return state
 
+    # 선택된 문서가 없으면 검색을 건너뜀
+    selected_docs = state.get("selected_docs")
+    if selected_docs is not None and len(selected_docs) == 0:
+        state["retrieved_docs"] = []
+        _log_trace(
+            step="RetrievalAgent",
+            purpose="스킵 (체크된 강의 자료 없음).",
+            decision="selected_docs가 비어있음.",
+        )
+        return state
+
     # router가 재작성한 쿼리 사용, 없으면 원본 메시지 폴백
     query = state.get("rewritten_query", "") or (
         state["messages"][-1]["content"] if state.get("messages") else ""
     )
-    results = vectorstore.query(query, k=5)
+    results = vectorstore.query(query, k=5, selected_sources=selected_docs)
     state["retrieved_docs"] = results
 
     logger.info(f"검색 완료: {len(results)}개 청크.")

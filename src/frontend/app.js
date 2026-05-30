@@ -102,11 +102,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const depthClasses = { 0: 'depth-light', 1: 'depth-standard', 2: 'depth-deep' };
     depthBtns.forEach(btn => {
         btn.addEventListener('click', () => {
-            depthBtns.forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
             socraticDepth = parseInt(btn.dataset.depth);
+            updateDepthUI(socraticDepth);
         });
     });
+
+    function updateDepthUI(depth) {
+        depthBtns.forEach(b => {
+            b.classList.remove('active');
+            if (parseInt(b.dataset.depth) === depth) {
+                b.classList.add('active');
+            }
+        });
+    }
 
     function escapeHtml(value) {
         return String(value ?? '')
@@ -180,6 +188,10 @@ document.addEventListener('DOMContentLoaded', () => {
         isThinking = true;
         const loadingId = addLoadingIndicator();
 
+        // 선택된 문서 수집
+        const checkedBoxes = Array.from(document.querySelectorAll('.doc-checkbox:checked'));
+        const selectedDocs = checkedBoxes.map(cb => cb.value);
+
         try {
             const response = await fetch('/chat', {
                 method: 'POST',
@@ -187,7 +199,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify({
                     messages: [...messages, { role: 'user', content: text }],
                     socratic_depth: socraticDepth,
-                    session_id: sessionId
+                    session_id: sessionId,
+                    selected_docs: selectedDocs
                 })
             });
 
@@ -248,6 +261,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (data.frustration_level !== undefined) {
                 updateFrustrationUI(data.frustration_level);
+            }
+
+            if (data.socratic_depth !== undefined && data.socratic_depth !== socraticDepth) {
+                socraticDepth = data.socratic_depth;
+                updateDepthUI(socraticDepth);
+                addMessage(`🤖 대화 맥락을 반영하여 학습 깊이를 자동으로 조절했습니다.`, 'system');
             }
 
             // Remove Loading & Add AI Response (with retrieved docs inline)
@@ -436,10 +455,32 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (node === 'retrieval_agent') {
             const count = output.retrieved_docs ? output.retrieved_docs.length : 0;
             detail = `${count}개 자료 참조`;
+        } else if (node === 'socratic_agent') {
+            const tr = output.tutor_response || '';
+            // Strip XML tags for preview
+            const cleanText = tr.replace(/<[^>]*>?/gm, '').trim();
+            detail = cleanText.length > 60 ? `초안: "${escapeHtml(cleanText.substring(0, 60))}..."` : `초안: "${escapeHtml(cleanText)}"`;
+        } else if (node === 'tool_agent') {
+            const result = output.tool_result;
+            if (result && result.tool_results && result.tool_results.length > 0) {
+                const tools = result.tool_results.map(t => t.tool).join(", ");
+                detail = `사용된 도구: <strong>${tools}</strong>`;
+            } else {
+                detail = `사용된 도구 없음`;
+            }
+        } else if (node === 'composer') {
+            const resp = output.response || '';
+            const cleanResp = resp.replace(/<[^>]*>?/gm, '').trim();
+            detail = cleanResp.length > 60 ? `최종: "${escapeHtml(cleanResp.substring(0, 60))}..."` : `최종: "${escapeHtml(cleanResp)}"`;
         } else if (node === 'reviewer') {
             const passed = output.evaluation?.pass;
             const retry = output.retry_count || 0;
-            detail = passed === false ? `검증 실패 — 재시도 ${retry}회` : `검증 통과`;
+            const fb = output.evaluation?.feedback || '';
+            if (passed === false) {
+                detail = `검증 실패 (재시도 ${retry}회)<br><span style="color: #ef4444; font-size: 0.7rem;">의견: "${escapeHtml(fb)}"</span>`;
+            } else {
+                detail = `검증 통과`;
+            }
         }
 
         const label = nodeLabels[node] || node;
@@ -624,6 +665,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 registeredDocsList.innerHTML = data.documents.map(filename => `
                     <div class="doc-item" data-filename="${filename}">
                         <div class="doc-item-left">
+                            <input type="checkbox" class="doc-checkbox" value="${filename}" checked title="검색 대상 포함">
                             <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4zm2 6a1 1 0 011-1h6a1 1 0 110 2H7a1 1 0 01-1-1zm1 3a1 1 0 100 2h6a1 1 0 100-2H7z" clip-rule="evenodd"/></svg>
                             <span title="${filename}">${filename}</span>
                         </div>

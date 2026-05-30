@@ -38,7 +38,7 @@ Lecture context (excerpt):
 "{context_excerpt}"
 
 Axes (score 1-5 each):
-1. socratic: 직접 답변을 피하고 소크라테스식 질문을 사용하는가 (5=순수 소크라테스, 1=완전 직접)
+{socratic_criteria}
 2. grounding: 제공된 강의 자료에 기반하는가 (5=명확히 강의 자료 인용, 1=전혀 관련 없음)
 3. encouragement: 따뜻하고 지지적인 어조인가 (5=매우 격려적, 1=냉담함)
 4. clarity: 명확하고 잘 구조화되어 있는가 (5=매우 명확, 1=혼란스러움)
@@ -96,7 +96,19 @@ def reviewer(state: AgentState) -> AgentState:
     # 강의 자료 중 앞 2개 청크의 텍스트를 컨텍스트로 사용 (최대 400자)
     context_excerpt = " ".join(d["text"] for d in docs[:2])[:400] if docs else ""
 
-    prompt = REVIEWER_PROMPT.format(draft=draft, context_excerpt=context_excerpt)
+    # 강제 설명 모드 또는 요약 요청인지 확인하여 소크라테스 평가 기준 완화
+    force_explain = state.get("force_explain", False)
+    from src.agent.helpers import _is_summary_request
+    messages = state.get("messages", [])
+    last_msg = messages[-1]["content"] if messages else ""
+    is_summary = _is_summary_request(last_msg) or _is_summary_request(state.get("rewritten_query", ""))
+
+    if force_explain or is_summary:
+        socratic_criteria = "1. socratic: [예외 상황] 강제 설명 모드 또는 요약 요청이므로 직접적인 설명이나 긴 요약이 적극 허용됩니다. (무조건 5점 부여)"
+    else:
+        socratic_criteria = "1. socratic: 직접 답변을 피하고 소크라테스식 질문을 사용하는가 (5=순수 소크라테스, 1=완전 직접)"
+
+    prompt = REVIEWER_PROMPT.format(draft=draft, context_excerpt=context_excerpt, socratic_criteria=socratic_criteria)
 
     try:
         if os.getenv("OPENAI_API_KEY"):
