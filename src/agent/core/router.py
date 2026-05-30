@@ -140,7 +140,12 @@ Analyze the conversation and latest user message, then output a single JSON with
    - 학생이 매우 진취적이고 더 깊은 원리/예외 상황을 묻는 등 도전을 원하면 2
    - 그 외 일반적인 진행이거나 확신이 없으면 null
 
-Frustration level: {frustration_level} (0=none, 높을수록 더 좌절함)
+6. frustration_level : 전체 대화 히스토리를 바탕으로 학생의 누적 좌절 수준을 판단 (0, 1, 2).
+   - 0: 좌절 신호 없음
+   - 1: "모르겠어", "어렵다", "헷갈린다" 등 가벼운 어려움 1~2회
+   - 2: 반복적 좌절, "포기", "그냥 알려줘" 등 강한 좌절 신호
+
+Socratic depth: {depth_mode} (현재 깊이: {depth_int})
 Socratic depth: {depth_mode} (현재 깊이: {depth_int})
 Evaluator feedback (retry 시): "{eval_feedback}"
 Quiz in progress: {quiz_in_progress} (True면 퀴즈 진행 중 — "정답 알려줘" 등은 반드시 "escape"로 분류)
@@ -157,7 +162,8 @@ Respond ONLY in JSON:
   "route": "learn" | "chat" | "tools" | "escape",
   "active_agents": ["retrieval", "socratic"],
   "subtask": "<한국어 작업 설명>",
-  "suggested_depth": 0 | 1 | 2 | null
+  "suggested_depth": 0 | 1 | 2 | null,
+  "frustration_level": 0 | 1 | 2
 }}"""
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -195,14 +201,7 @@ def router(state: AgentState) -> AgentState:
     messages = state.get("messages", [])
     last_message = messages[-1]["content"] if messages else ""
 
-    # ── 1. 좌절 레벨 계산 ────────────────────────────────────────
-    frustration_count = sum(
-        1 for msg in messages
-        if msg.get("role") == "user" and _detect_frustration(msg.get("content", ""))
-    )
-    state["frustration_level"] = frustration_count
-
-    # ── 2. LLM 호출 ─────────────────────────────────────────────
+    # ── 1. LLM 호출 ─────────────────────────────────────────────
     depth_modes = ["Light (1-2 turns)", "Standard (3-4 turns)", "Deep (5+ turns)"]
     depth_mode = depth_modes[state.get("socratic_depth", 1)]
     eval_feedback = state.get("evaluation", {}).get("feedback", "")
@@ -212,7 +211,6 @@ def router(state: AgentState) -> AgentState:
     quiz_in_progress = len(pending_quiz) > 0
 
     prompt = ROUTER_PROMPT.format(
-        frustration_level=frustration_count,
         depth_mode=depth_mode,
         depth_int=state.get("socratic_depth", 1),
         eval_feedback=eval_feedback,
@@ -239,6 +237,8 @@ def router(state: AgentState) -> AgentState:
         active_agents = parsed.get("active_agents", [])
         subtask = parsed.get("subtask", "")
         suggested_depth = parsed.get("suggested_depth", None)
+        frustration_level = int(parsed.get("frustration_level", 0))
+        frustration_level = max(0, min(2, frustration_level))
     except Exception as e:
         # 파싱 실패 시 원문 사용 + 키워드 기반 rule로 라우팅
         logger.warning(f"Router JSON 파싱 실패: {e} — rule-based fallback 적용")
@@ -247,6 +247,10 @@ def router(state: AgentState) -> AgentState:
         active_agents = [] if route == "tools" else ["retrieval", "socratic"]
         subtask = last_message
         suggested_depth = None
+        frustration_level = sum(
+            1 for msg in messages
+            if msg.get("role") == "user" and _detect_frustration(msg.get("content", ""))
+        )
 
     # ── 5. 후처리 ────────────────────────────────────────────────
 
@@ -290,12 +294,13 @@ def router(state: AgentState) -> AgentState:
     state["route"] = route
     state["active_agents"] = active_agents
     state["subtask"] = subtask
+    state["frustration_level"] = frustration_level
 
     if suggested_depth not in (0, 1, 2):
         suggested_depth = _suggest_depth_by_rules(
             text=last_message,
             route=route,
-            frustration_count=frustration_count,
+            frustration_count=frustration_level,
         )
 
     if suggested_depth in (0, 1, 2) and suggested_depth != state.get("socratic_depth"):
@@ -309,7 +314,7 @@ def router(state: AgentState) -> AgentState:
         inputs={
             "Original": last_message,
             "History turns": len(messages) - 1,
-            "Frustration": frustration_count,
+            "Frustration": frustration_level,
         },
         prompt_details={"History": history_text, "Prompt": prompt},
         response=response_str,
