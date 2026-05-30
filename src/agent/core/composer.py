@@ -27,8 +27,6 @@ from src.agent.llm import llm, _get_content
 from src.agent.helpers import (
     _log_trace,
     _is_quiz_answer,
-    _is_last_message_quiz_prompt,
-    _detect_frustration,
     _grade_quiz,
     _format_quiz_response,
 )
@@ -64,10 +62,13 @@ def _extract_question(text: str, has_prior_answer: bool = True) -> str:
     
     s_match = re.search(r"<scaffold>(.*?)</scaffold>", text, re.DOTALL)
     scaffold = s_match.group(1).strip() if s_match else ""
-    
+
     q_match = re.search(r"<question>(.*?)</question>", text, re.DOTALL)
     if q_match:
         question = q_match.group(1).strip()
+        # scaffold가 question과 동일하거나 질문 문장이면 중복 방지를 위해 제외
+        if scaffold == question or scaffold.endswith("?") or scaffold.endswith("요?"):
+            scaffold = ""
         parts = [p for p in [feedback, scaffold, question] if p]
         return "\n\n".join(parts)
     # <answer> 태그가 있으면 그 이후 텍스트에서 질문 문장만 추출
@@ -80,27 +81,6 @@ def _extract_question(text: str, has_prior_answer: bool = True) -> str:
     sentences = [s.strip() for s in re.split(r"(?<=[.?!])\s+", text) if s.strip()]
     return sentences[-1] if sentences else text
 
-
-def _format_quiz_escape(pending_quiz: list) -> str:
-    """pending_quiz의 정답을 규칙 기반으로 포맷한다. LLM 호출 없음."""
-    lines = ["## 퀴즈 정답\n"]
-    for i, item in enumerate(pending_quiz, 1):
-        answer = item.get("answer", "").strip()
-        options = item.get("options", [])
-        question = item.get("question", "")
-
-        # answer가 단일 알파벳(A~D)이면 인덱스로 변환해 선택지 텍스트 표시
-        if len(answer) == 1 and answer.upper() in "ABCD":
-            letter = answer.upper()
-            idx = ord(letter) - ord("A")
-            answer_text = options[idx] if options and 0 <= idx < len(options) else ""
-            lines.append(f"{i}. {question}")
-            lines.append(f"   정답: {letter}. {answer_text}\n")
-        else:
-            # LLM이 전체 텍스트로 반환한 경우 그대로 표시
-            lines.append(f"{i}. {question}")
-            lines.append(f"   정답: {answer}\n")
-    return "\n".join(lines)
 
 
 def composer(state: AgentState) -> AgentState:

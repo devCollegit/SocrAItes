@@ -151,7 +151,6 @@ Analyze the conversation and latest user message, then output a single JSON with
    - 2: 반복적 좌절, "포기", "그냥 알려줘" 등 강한 좌절 신호
 
 Socratic depth: {depth_mode} (현재 깊이: {depth_int})
-Socratic depth: {depth_mode} (현재 깊이: {depth_int})
 Evaluator feedback (retry 시): "{eval_feedback}"
 Quiz in progress: {quiz_in_progress} (True면 퀴즈 진행 중 — "정답 알려줘" 등은 반드시 "escape"로 분류)
 
