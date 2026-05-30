@@ -182,12 +182,17 @@
       ▼
 [LangGraph Agent — StateGraph]
       │
-      ├── [Router]  ← 단일 노드 (기존 Coordinator + Planner 통합)
+      ├── [Router]  ← 단일 LLM 호출로 라우팅·쿼리재작성·깊이조절·좌절감지를 동시 처리
       │     - 이전 대화 + 최신 입력으로 Standalone 쿼리 재구성
       │     - route 결정: "learn" | "chat" | "tools" | "escape"
-      │     - Socratic Depth 동적 조절 (suggested_depth)
+      │       ※ tools 오분류 방지: 학습 의도 키워드("설명", "원리" 등) 감지 시 learn으로 보정
       │     - active_agents 목록 결정 (retrieval / socratic / tools)
-      │     - frustration_level 판단 (0~2, 대화 맥락 기반 LLM 판단)
+      │     - suggested_depth: LLM이 대화 맥락 분석 후 Light(0)/Standard(1)/Deep(2) 조절
+      │       · 좌절 신호(frustration≥2, "포기", escape 요청) → Light(0)으로 하향
+      │       · 심화 신호("원리", "수식", "tradeoff" 등) → Deep(2)으로 상향
+      │       · 회복 신호("아하", "이해했어", "다음" 등) → Standard(1)으로 복구
+      │       · LLM 판단 실패 시 rule-based fallback(_suggest_depth_by_rules) 적용
+      │     - frustration_level 판단 (0~2, 단일 LLM 호출로 키워드 기반 대비 맥락 이해 향상)
       │
       ├── [Responder]  (chat 경로 — 인사·잡담 즉시 응답)
       │     - LLM 1회 호출로 캐주얼 응답 생성 → END
@@ -198,7 +203,8 @@
       │
       ├── [Socratic Agent]  (learn / escape 경로)
       │     - 강의 자료 + 대화 이력 기반 소크라테스 응답 생성
-      │     - <answer> / <feedback> / <question> 구조화 출력
+      │     - <answer> / <feedback> / <scaffold> / <question> 4섹션 구조화 출력
+      │       · <scaffold>: 다음 질문에 앞서 필요한 사전 지식·힌트 제공 (없으면 생략)
       │     - Deep 모드 / 개념 정의 질문 시 Tavily 웹 검색 보강
       │     - _MAX_TURNS {0:2, 1:4, 2:6} 기준 반문 한도 초과 시 직접 설명 전환
       │
@@ -374,7 +380,8 @@ SocrAItes 실행 화면
 
 **성능**
 
-- Sub Agent 분리로 턴당 LLM 호출 약 2회 증가 → 응답 완료 시간 늘어남
+- Sub Agent 분리로 턴당 LLM 호출 증가 → 응답 완료 시간 늘어남
+- Router에 frustration_level·suggested_depth를 통합하여 별도 LLM 호출을 줄였으나, 소크라테스 응답·Reviewer 재시도 등으로 평균 2~4회 호출 발생
 - SSE 스트리밍으로 체감 대기 시간은 줄였으나 실제 완료 시간은 증가함
 - BGE-M3 로컬 임베딩 모델(570MB)이 CPU 환경에서 첫 로드 시 15~30초 소요됨
 
