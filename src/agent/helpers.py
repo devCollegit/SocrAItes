@@ -63,7 +63,18 @@ def _log_trace(
     if response is not None:
         trace_logger.info("📤 [LLM RESPONSE]")
         trace_logger.info("-" * 80)
-        indented = "\n".join(f"  {line}" for line in str(response).split("\n"))
+        
+        formatted_response = str(response)
+        if isinstance(response, dict):
+            formatted_response = json.dumps(response, ensure_ascii=False, indent=2)
+        elif isinstance(response, str):
+            try:
+                parsed_json = json.loads(response.strip())
+                formatted_response = json.dumps(parsed_json, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+                
+        indented = "\n".join(f"  {line}" for line in formatted_response.split("\n"))
         trace_logger.info(indented)
         trace_logger.info("-" * 80)
         trace_logger.info("")

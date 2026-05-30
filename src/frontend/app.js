@@ -329,9 +329,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 addMessage(`🤖 대화 맥락을 반영하여 학습 깊이를 자동으로 조절했습니다.`, 'system');
             }
 
+            // Extract node steps HTML before removing loading indicator
+            const loadingEl = document.getElementById(loadingId);
+            let stepsHtml = '';
+            if (loadingEl) {
+                const stepsEl = document.getElementById(`${loadingId}-steps`);
+                if (stepsEl) stepsHtml = stepsEl.innerHTML;
+            }
+
             // Remove Loading & Add AI Response (with retrieved docs inline)
             removeLoadingIndicator(loadingId);
-            addMessage(data.answer, 'ai', data.retrieved_docs);
+            addMessage(data.answer, 'ai', data.retrieved_docs, stepsHtml);
 
             // Render Quiz UI if quiz_data exists and has items
             if (data.quiz_data && Array.isArray(data.quiz_data) && data.quiz_data.length > 0) {
@@ -375,7 +383,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function addMessage(text, role, retrievedDocs = []) {
+    function addMessage(text, role, retrievedDocs = [], stepsHtml = '') {
         const msgDiv = document.createElement('div');
         msgDiv.className = `message ${role}`;
         
@@ -401,6 +409,42 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         
         bodyDiv.appendChild(contentDiv);
+
+        // Add node progress (stepsHtml) if provided
+        if (role === 'ai' && stepsHtml) {
+            const stepsWrapper = document.createElement('div');
+            stepsWrapper.className = 'message-references';
+            stepsWrapper.style.marginTop = '10px';
+
+            const toggleBtn = document.createElement('button');
+            toggleBtn.className = 'references-toggle';
+            toggleBtn.innerHTML = `
+                <svg class="ref-icon" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0a1.532 1.532 0 01-2.286.948c-1.372-.836-2.942.734-2.106 2.106.54.886.061 2.042-.947 2.287-1.561.379-1.561 2.6 0 2.978a1.532 1.532 0 01.947 2.287c-.836 1.372.734 2.942 2.106 2.106a1.532 1.532 0 012.287.947c.379 1.561 2.6 1.561 2.978 0a1.533 1.533 0 012.287-.947c1.372.836 2.942-.734 2.106-2.106a1.533 1.533 0 01.947-2.287c1.561-.379 1.561-2.6 0-2.978a1.532 1.532 0 01-.947-2.287c.836-1.372-.734-2.942-2.106-2.106a1.532 1.532 0 01-2.287-.947zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd"/></svg>
+                <span>진행 내용 보기</span>
+                <span class="ref-arrow">▼</span>
+            `;
+
+            const listDiv = document.createElement('div');
+            listDiv.className = 'node-progress-card';
+            listDiv.style.display = 'none';
+            listDiv.style.marginTop = '8px';
+            listDiv.style.background = 'transparent';
+            listDiv.style.boxShadow = 'none';
+            listDiv.style.padding = '0';
+            listDiv.style.border = 'none';
+            listDiv.innerHTML = `<div class="node-steps">${stepsHtml}</div>`;
+
+            toggleBtn.addEventListener('click', () => {
+                const isExpanded = listDiv.style.display === 'block';
+                listDiv.style.display = isExpanded ? 'none' : 'block';
+                toggleBtn.classList.toggle('active', !isExpanded);
+                scrollToBottom();
+            });
+
+            stepsWrapper.appendChild(toggleBtn);
+            stepsWrapper.appendChild(listDiv);
+            bodyDiv.appendChild(stepsWrapper);
+        }
 
         // Add RAG references if it is AI and retrievedDocs exist
         if (role === 'ai' && retrievedDocs && retrievedDocs.length > 0) {

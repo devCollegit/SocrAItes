@@ -85,13 +85,17 @@ def _suggest_depth_by_rules(
     if frustration_count >= 2 or _detect_frustration(text):
         return 0
 
-    # Deep-dive intent signals -> raise depth for advanced probing.
     deep_signals = [
         "깊게", "심화", "원리", "예외", "한계", "tradeoff", "트레이드오프",
         "증명", "수식", "비교분석", "근거", "왜그런지", "어떻게작동",
     ]
     if route == "learn" and any(s in clean for s in deep_signals):
         return 2
+
+    # 평온/회복 신호 -> 다시 Standard (1) 로 복구
+    recovery_signals = ["알겠어", "이해했어", "아하", "그렇구나", "이제알", "다음", "넘어가"]
+    if route == "learn" and frustration_count == 0 and any(s in clean for s in recovery_signals):
+        return 1
 
     return None
 
@@ -138,6 +142,7 @@ Analyze the conversation and latest user message, then output a single JSON with
 5. suggested_depth : 대화 맥락을 분석하여 소크라테스 깊이를 동적으로 조절 (0=Light, 1=Standard, 2=Deep, null=변경없음).
    - 학생이 좌절(frustration >= 2)하거나 빠른 답을 강하게 요구하면 0
    - 학생이 매우 진취적이고 더 깊은 원리/예외 상황을 묻는 등 도전을 원하면 2
+   - 좌절이 해소되어 "아하!", "이제 알겠어" 등 깨달음을 얻었거나, 심화 질문이 끝나고 평이한 새 주제로 넘어간다면 1
    - 그 외 일반적인 진행이거나 확신이 없으면 null
 
 Frustration level: {frustration_level} (0=none, 높을수록 더 좌절함)
