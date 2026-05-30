@@ -38,6 +38,32 @@ _TOOL_KEYWORDS = [
     "복습 일정", "일정 등록", "schedule",              # 일정 등록
 ]
 
+# 학습형 질의(설명/요약/비교 등)는 tools 오분류를 방지하기 위해 learn 우선 처리
+_LEARN_INTENT_KEYWORDS = [
+    "요약", "정리", "설명", "알려줘", "핵심", "개념", "의미", "차이", "비교",
+    "원리", "왜", "어떻게", "장점", "단점", "발전", "흐름", "예시",
+]
+
+
+def _has_learn_intent(text: str) -> bool:
+    clean = text.replace(" ", "").lower()
+    return any(k.replace(" ", "").lower() in clean for k in _LEARN_INTENT_KEYWORDS)
+
+
+def _has_explicit_tool_intent(text: str) -> bool:
+    """도구 실행이 '명시적'으로 필요한 문장인지 보수적으로 판단한다."""
+    clean = text.replace(" ", "").lower()
+
+    explicit_patterns = [
+        # quiz
+        "퀴즈내", "문제내", "연습문제", "테스트해", "시험내",
+        # weakness/strength
+        "약점저장", "약점등록", "강점저장", "강점등록",
+        # schedule
+        "복습일정", "일정잡", "일정등록", "리마인드", "스케줄",
+    ]
+    return any(p in clean for p in explicit_patterns)
+
 # ──────────────────────────────────────────────────────────────────────────────
 # LLM 프롬프트
 # ──────────────────────────────────────────────────────────────────────────────
@@ -206,21 +232,27 @@ def router(state: AgentState) -> AgentState:
     if route == "tools":
         active_agents = []
 
-    # escape route: pending_quiz는 composer fast-path이므로 socratic만 실행
-    # (pending_quiz 없을 때만 socratic이 <answer>를 생성해야 함)
+    # escape route: pending_quiz가 없으면 근거 기반 답변을 위해 retrieval도 함께 실행
     if route == "escape":
-        active_agents = ["socratic"]
+        active_agents = [] if quiz_in_progress else ["retrieval", "socratic"]
 
     # learn route이면 retrieval/socratic을 기본으로 포함
     if route == "learn" and not active_agents:
         active_agents = ["retrieval", "socratic"]
 
-    # rule-based override: LLM이 learn으로 판단했어도 도구 키워드 있으면 tools route로 전환
-    # retrieval/socratic을 거칠 필요 없이 바로 tool_agent로 분기
-    if route == "learn" and _needs_tools(last_message):
+    # rule-based override 1:
+    # LLM이 learn으로 판단했어도 명시적 도구 의도가 있으면 tools로 전환
+    if route == "learn" and _has_explicit_tool_intent(last_message):
         route = "tools"
         active_agents = []
         logger.info("도구 키워드 감지 — route=tools로 강제 전환.")
+
+    # rule-based override 2:
+    # LLM이 tools로 분류했더라도 명시적 도구 의도가 없고 학습형 질의면 learn으로 되돌린다.
+    if route == "tools" and not _has_explicit_tool_intent(last_message) and _has_learn_intent(last_message):
+        route = "learn"
+        active_agents = ["retrieval", "socratic"]
+        logger.info("학습형 질의 감지 — route=learn으로 재보정.")
 
     # state 업데이트
     state["rewritten_query"] = rewritten_query
