@@ -14,13 +14,14 @@
 """
 
 import os
+import re
 import json
 import logging
 
 from langchain_core.messages import HumanMessage
 
 from src.agent.state import AgentState
-from src.agent.llm import llm, _get_content
+from src.agent.llm import llm, llm_strong, _get_content
 from src.agent.helpers import _log_trace
 
 logger = logging.getLogger("SocrAItes.Agent")
@@ -31,8 +32,16 @@ logger = logging.getLogger("SocrAItes.Agent")
 
 REVIEWER_PROMPT = """You are the Reviewer for SocrAItes. Evaluate the draft response on 4 axes.
 
+Student's Latest Message:
+"{last_msg}"
+
 Draft Response:
 "{draft}"
+
+Internal Tutor Answer (Hidden from student, for your reference only):
+"{tutor_answer}"
+* Note: This answer is purely for internal reference to understand the tutor's goal. Do NOT penalize the tutor for providing direct explanations here. 
+Furthermore, you should explicitly check if the "Draft Response" utilizes the prior knowledge and concepts from this internal answer to provide helpful hints and scaffolding for the student's latest message. Providing such hints is highly encouraged and should positively impact the socratic score.
 
 Lecture context (excerpt):
 "{context_excerpt}"
@@ -106,17 +115,27 @@ def reviewer(state: AgentState) -> AgentState:
     if force_explain or is_summary:
         socratic_criteria = "1. socratic: [예외 상황] 강제 설명 모드 또는 요약 요청이므로 직접적인 설명이나 긴 요약이 적극 허용됩니다. (무조건 5점 부여)"
     else:
-        socratic_criteria = "1. socratic: 직접 답변을 피하고 소크라테스식 질문을 사용하는가 (5=순수 소크라테스, 1=완전 직접)"
+        socratic_criteria = "1. socratic: 직접 답변을 피하고 소크라테스식 질문을 사용하는가? (단, 학생의 직전 답변에 대한 구체적이고 친절한 피드백은 적극 권장됨) (5=적절한 피드백과 함께 순수 소크라테스 질문, 1=완전 직접 답변)"
 
-    prompt = REVIEWER_PROMPT.format(draft=draft, context_excerpt=context_excerpt, socratic_criteria=socratic_criteria)
+    tutor_response = state.get("tutor_response", "")
+    match = re.search(r"<answer>(.*?)</answer>", tutor_response, re.DOTALL)
+    tutor_answer = match.group(1).strip() if match else "없음"
+
+    prompt = REVIEWER_PROMPT.format(
+        last_msg=last_msg,
+        draft=draft, 
+        tutor_answer=tutor_answer,
+        context_excerpt=context_excerpt, 
+        socratic_criteria=socratic_criteria
+    )
 
     try:
         if os.getenv("OPENAI_API_KEY"):
-            response = llm.bind(response_format={"type": "json_object"}).invoke(
+            response = llm_strong.bind(response_format={"type": "json_object"}).invoke(
                 [HumanMessage(content=prompt)]
             )
         else:
-            response = llm.invoke([HumanMessage(content=prompt)])
+            response = llm_strong.invoke([HumanMessage(content=prompt)])
         parsed = json.loads(_get_content(response).strip())
         scores = parsed.get("scores", {})
         passed = parsed.get("pass", True)

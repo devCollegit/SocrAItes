@@ -12,6 +12,7 @@
 - AI 노트, 강점/약점 요약
 """
 
+import re
 import logging
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -76,13 +77,18 @@ Your response MUST always contain three clearly separated sections in this exact
 [강의 자료에 근거한 정확한 직접 정답. 학생이 이해하기 쉽게 한국어로 작성.]
 </answer>
 <feedback>
-[학생의 직전 답변에 대한 평가를 한 문장으로만 작성한다.
-⚠️ 절대 금지: "그렇다면", "그럼", 질문 문장. 오직 정답/부분정답/오답 평가만.
-주제 전환이나 다음 개념 브리지는 반드시 <question>에 작성한다.
+[학생의 직전 답변 중 어느 부분이 맞고 어느 부분이 부족한지 구체적이고 친절하게 설명한다.
+단순히 "정답", "부분 정답" 같은 단답형 평가는 지양하고, 학생이 배울 수 있는 의미 있는 피드백을 제공한다.
 학생의 직전 발화가 없거나 처음 질문인 경우 반드시 아무것도 쓰지 말고 태그만 남긴다: <feedback></feedback>]
 </feedback>
+<scaffold>
+[다음 질문(<question>)에 답하기 위해 필요한 사전 지식이나 힌트, 용어의 정의 등을 제공한다.
+<answer>의 핵심 내용에 도달하기 위해 필요한 배경 지식을 작성하여 학생이 올바른 방향으로 나아갈 수 있도록 돕는다.
+⚠️ 절대 금지: "그렇다면", "그럼" 등 다음 질문으로 넘어가는 연결어나 질문 문장. 질문은 오직 <question>에만 작성한다.
+제공할 사전 지식이나 힌트가 굳이 필요하지 않은 단순한 상황이라면 비워둔다: <scaffold></scaffold>]
+</scaffold>
 <question>
-[다음 소크라테스식 질문 한 개. feedback 없이 질문만 작성.]
+[다음 소크라테스식 질문 한 개. 피드백이나 설명 없이 오직 질문만 작성.]
 </question>
 
 <answer> 작성 규칙:
@@ -150,6 +156,8 @@ Personalization:
 - Learning Style: '{learning_style}' (practical=실사례, conceptual=이론, concise=간결)
 - Preferred Tone: '{preferred_tone}' (encouraging=격려, strict=엄격, academic=학술)
 - Academic Background: '{academic_background}'
+
+⚠️ CRITICAL: Use the following AI Notes, Strengths, and Weaknesses ONLY if they are highly relevant to the student's current question. If they are NOT relevant, IGNORE them completely so they do not distract from the main topic.
 - AI Notes: {profile_notes}
 - Strengths: "{strengths_summary}"
 - Weaknesses: "{weaknesses_summary}"
@@ -157,7 +165,7 @@ Personalization:
 Socratic depth: {depth} — 아래 모드에 따라 반문 횟수와 깊이를 엄격하게 지켜라.
 {depth_guide}
 Frustration level: {frustration_level}
-Reviewer feedback (non-empty면 개선): "{eval_feedback}"
+{reviewer_section}
 
 Lecture context:
 ---
@@ -227,6 +235,21 @@ def socratic_agent(state: AgentState) -> AgentState:
     depth = state.get("socratic_depth", 1)
     frustration_level = state.get("frustration_level", 0)
     eval_feedback = state.get("evaluation", {}).get("feedback", "")
+    previous_response = state.get("tutor_response", "")
+    
+    if eval_feedback and previous_response:
+        # 리뷰어는 <answer>를 보지 못했으므로, Socratic Agent가 리뷰어의 피드백을 
+        # 정확히 이해하도록 <answer> 블록을 제거한 버전을 보여준다.
+        stripped_response = re.sub(r"<answer>.*?</answer>\n*", "", previous_response, flags=re.DOTALL).strip()
+        reviewer_section = (
+            f"⚠️ REJECTED PREVIOUS RESPONSE:\n{stripped_response}\n\n"
+            f"⚠️ REVIEWER FEEDBACK:\n{eval_feedback}\n"
+            "위 피드백을 반영하여 응답을 완전히 새로 작성하세요."
+        )
+    elif eval_feedback:
+        reviewer_section = f"⚠️ REVIEWER FEEDBACK: {eval_feedback}"
+    else:
+        reviewer_section = "Reviewer feedback: None (First attempt)"
 
     # ── 사용자 ID 조회 ────────────────────────────────────────────
     # session_id → DB에서 user_id 조회 (실패 시 "default" 사용)
@@ -264,6 +287,27 @@ def socratic_agent(state: AgentState) -> AgentState:
     # ── 강의 자료 컨텍스트 조합 ───────────────────────────────────
     context = "\n".join(d["text"] for d in docs) if docs else "강의 자료 없음."
     last_msg = history[-1]["content"] if history else ""
+
+    # ── 프로필(강점/약점/노트) 연관성 체크 및 필터링 ──────────────────
+    has_real_profile = bool(user_profile.get("notes") or user_profile.get("strengths_summary") or user_profile.get("weaknesses_summary"))
+    if last_msg and has_real_profile:
+        _prof_content = f"노트: {profile_notes}\n강점: {strengths_summary}\n약점: {weaknesses_summary}"
+        _rel_prompt = (
+            f"학생의 질문/요청: \"{last_msg}\"\n\n"
+            f"학생의 기존 학습 프로필(노트/강점/약점):\n{_prof_content}\n\n"
+            "학생의 질문 내용과 위 학습 프로필의 내용이 주제상 직접적인 연관성이 높은가?\n"
+            "연관성이 높다면 'RELEVANT', 무관하거나 관련성이 낮다면 'IRRELEVANT'만 출력해."
+        )
+        try:
+            _rel_res = _get_content(llm.invoke([HumanMessage(content=_rel_prompt)])).strip().upper()
+            if "IRRELEVANT" in _rel_res:
+                profile_notes = "현재 쿼리와 무관하여 생략됨."
+                strengths_summary = "현재 쿼리와 무관하여 생략됨."
+                weaknesses_summary = "현재 쿼리와 무관하여 생략됨."
+                logger.info("프로필(강점/약점/노트)이 쿼리와 무관하여 필터링되었습니다.")
+        except Exception as e:
+            logger.warning(f"프로필 연관성 체크 실패: {e}")
+
 
     # ── 웹 검색으로 컨텍스트 보강 ────────────────────────────────
     # Deep 모드는 항상, 그 외 모드는 개념 정의 질문("X가 뭐야?")일 때만 실행
@@ -344,7 +388,7 @@ def socratic_agent(state: AgentState) -> AgentState:
         depth=depth,
         depth_guide=depth_guide,
         frustration_level=frustration_level,
-        eval_feedback=eval_feedback,
+        reviewer_section=reviewer_section,
         learning_style=learning_style,
         preferred_tone=preferred_tone,
         academic_background=academic_background,

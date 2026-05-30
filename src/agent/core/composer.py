@@ -57,19 +57,24 @@ def _extract_feedback(text: str) -> str:
 
 
 def _extract_question(text: str, has_prior_answer: bool = True) -> str:
-    """socratic_agent 출력에서 <feedback> + <question> 태그 내용을 합쳐서 반환한다.
+    """socratic_agent 출력에서 <feedback> + <scaffold> + <question> 태그 내용을 합쳐서 반환한다.
     has_prior_answer=False이면 feedback을 무조건 생략한다.
     태그가 없으면 <answer> 이후 텍스트만, 그것도 없으면 마지막 문장만 반환한다."""
     feedback = _extract_feedback(text) if has_prior_answer else ""
+    
+    s_match = re.search(r"<scaffold>(.*?)</scaffold>", text, re.DOTALL)
+    scaffold = s_match.group(1).strip() if s_match else ""
+    
     q_match = re.search(r"<question>(.*?)</question>", text, re.DOTALL)
     if q_match:
         question = q_match.group(1).strip()
-        return (f"{feedback}\n\n{question}" if feedback else question).strip()
+        parts = [p for p in [feedback, scaffold, question] if p]
+        return "\n\n".join(parts)
     # <answer> 태그가 있으면 그 이후 텍스트에서 질문 문장만 추출
     after_answer = re.sub(r"<answer>.*?</answer>", "", text, flags=re.DOTALL).strip()
     if after_answer:
         # LLM이 태그를 그대로 남긴 경우 사용자 응답에 노출되지 않도록 제거
-        cleaned = re.sub(r"</?(answer|feedback|question)>", "", after_answer, flags=re.IGNORECASE)
+        cleaned = re.sub(r"</?(answer|feedback|scaffold|question)>", "", after_answer, flags=re.IGNORECASE)
         return cleaned.strip()
     # 최후 fallback: 마지막 문장만 반환
     sentences = [s.strip() for s in re.split(r"(?<=[.?!])\s+", text) if s.strip()]
@@ -225,7 +230,7 @@ def composer(state: AgentState) -> AgentState:
 
         # Safety net: any leftover structured tags should never be shown to end users.
         state["response"] = re.sub(
-            r"</?(answer|feedback|question)>",
+            r"</?(answer|feedback|scaffold|question)>",
             "",
             state.get("response", ""),
             flags=re.IGNORECASE,
