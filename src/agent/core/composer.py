@@ -180,15 +180,29 @@ def composer(state: AgentState) -> AgentState:
     # ── 5. learn route → <question> 또는 <answer> 추출 ──────────
     # force_explain=True(반문 한도 초과)이면 <answer>를, 아니면 <question>을 노출한다.
     if tutor_response:
+        from src.agent.helpers import _is_summary_request
+        
+        # Check if this was a summary request
+        messages = state.get("messages", [])
+        last_msg = messages[-1]["content"] if messages else ""
+        is_summary = _is_summary_request(last_msg) or _is_summary_request(state.get("rewritten_query", ""))
+        
         # 직전 메시지가 assistant → user 순서일 때만 feedback 표시
         # (첫 질문이거나 토픽이 바뀐 직후에는 feedback 없음)
-        msgs = history[:-1]  # 현재 user 메시지 제외
+        history = state.get("messages", [])
+        # 현재 사용자 메시지 이전에 튜터(assistant)가 던진 질문이 있었는지 확인
         has_prior_answer = (
-            len(msgs) >= 2
-            and msgs[-1]["role"] == "user"
-            and any(m["role"] == "assistant" for m in msgs)
+            len(history) >= 2
+            and history[-2]["role"] == "assistant"
         )
-        if state.get("force_explain"):
+        
+        if is_summary:
+            answer = _extract_answer(tutor_response)
+            question = _extract_question(tutor_response, has_prior_answer=False)
+            state["response"] = f"{answer}\n\n{question}".strip()
+            logger.info("요약 요청 → <answer> + <question> 결합 완료.")
+            _log_trace(step="Composer", purpose="요약 요청: 결합 추출.", decision="<answer>+<question> → response.")
+        elif state.get("force_explain"):
             extracted = _extract_answer(tutor_response)
             state["response"] = extracted or _extract_question(tutor_response, has_prior_answer=False)
             state["force_explain"] = False
@@ -198,6 +212,7 @@ def composer(state: AgentState) -> AgentState:
             state["response"] = _extract_question(tutor_response, has_prior_answer=has_prior_answer)
             logger.info("learn route → <question> 추출 완료.")
             _log_trace(step="Composer", purpose="learn: <question> 추출.", decision="<question> → response.")
+        
         state["tool_results"] = []
         return state
 
