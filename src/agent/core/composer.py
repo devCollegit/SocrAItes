@@ -183,18 +183,27 @@ def composer(state: AgentState) -> AgentState:
     # force_explain=True(반문 한도 초과)이면 <answer>를, 아니면 <question>을 노출한다.
     if tutor_response:
         from src.agent.helpers import _is_summary_request
-        
-        # Check if this was a summary request
-        messages = state.get("messages", [])
-        last_msg = messages[-1]["content"] if messages else ""
+
         is_summary = _is_summary_request(last_msg) or _is_summary_request(state.get("rewritten_query", ""))
-        
-        # 직전 메시지가 assistant → user 순서일 때만 feedback 표시
-        # (첫 질문이거나 토픽이 바뀐 직후에는 feedback 없음)
-        history = state.get("messages", [])
-        # 현재 사용자 메시지 이전에 튜터(assistant)가 던진 질문이 있었는지 확인
+
+        # 현재 사용자 메시지가 '답변'인지 '새 질문'인지 판별
+        # 새 질문이면 feedback을 무조건 숨긴다 (LLM이 엉뚱한 칭찬을 만들어내는 것 방지)
+        _question_markers = (
+            "뭐야", "뭐예요", "뭔가요", "뭔지", "뭔데", "무엇",
+            "알려줘", "알려주세요", "설명해줘", "설명해주세요",
+            "어떻게", "어떤", "왜", "언제", "누가", "어디",
+            "what", "how", "why", "when", "who", "where",
+        )
+        _last_msg_lower = last_msg.lower().strip()
+        _is_new_question = (
+            _last_msg_lower.endswith("?") or
+            _last_msg_lower.endswith("？") or
+            any(_last_msg_lower.startswith(m) or _last_msg_lower.endswith(m)
+                for m in _question_markers)
+        )
         has_prior_answer = (
-            len(history) >= 2
+            not _is_new_question
+            and len(history) >= 2
             and history[-2]["role"] == "assistant"
         )
         
