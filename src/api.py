@@ -85,6 +85,7 @@ class ChatRequest(BaseModel):
     messages: List[ChatMessage]
     socratic_depth: Optional[int] = 1
     session_id: Optional[str] = None
+    selected_docs: Optional[List[str]] = None
 
 class ChatResponse(BaseModel):
     answer: str
@@ -152,6 +153,7 @@ async def chat(request: ChatRequest):
             "session_id": session_id,
             "pending_quiz": restored_pending_quiz,
             "user_profile": user_profile,
+            "selected_docs": request.selected_docs if request.selected_docs is not None else [],
         })
         
         runnable = GRAPH.compile()
@@ -213,6 +215,7 @@ async def chat(request: ChatRequest):
                     "active_agents": current_state.get("active_agents", []),
                     "tool_results": current_state.get("tool_results", []),
                     "frustration_level": current_state.get("frustration_level", 0),
+                    "socratic_depth": current_state.get("socratic_depth", 1),
                     "quiz_data": quiz_data,
                 }
                 yield f"data: {json.dumps(final_data, ensure_ascii=False)}\n\n"

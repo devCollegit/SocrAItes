@@ -114,7 +114,7 @@ def _cosine_similarity(v1: List[float], v2: List[float]) -> float:
     return dot_product / (norm_a * norm_b)
 
 
-def query(query_text: str, k: int = 5) -> List[Dict[str, Any]]:
+def query(query_text: str, k: int = 5, selected_sources: list[str] | None = None) -> list[dict[str, Any]]:
     ensure_index()
     client = get_client()
 
@@ -122,9 +122,18 @@ def query(query_text: str, k: int = 5) -> List[Dict[str, Any]]:
     window = k * 4
 
     # BM25 검색 (text, dense_vector, source, page 모두 추출)
+    bm25_query = {"match": {"text": {"query": query_text}}}
+    if selected_sources:
+        bm25_query = {
+            "bool": {
+                "must": bm25_query,
+                "filter": {"terms": {"source": selected_sources}}
+            }
+        }
+
     bm25_resp = client.search(
         index=INDEX_NAME,
-        body={"query": {"match": {"text": {"query": query_text}}}, "size": window},
+        body={"query": bm25_query, "size": window},
     )
     bm25_hits = {}
     for h in bm25_resp["hits"]["hits"]:
@@ -137,9 +146,13 @@ def query(query_text: str, k: int = 5) -> List[Dict[str, Any]]:
     bm25_ranking = list(bm25_hits.keys())
 
     # Dense KNN 검색 (text, dense_vector, source, page 모두 추출)
+    knn_body = {"field": "dense_vector", "query_vector": query_vector, "k": window, "num_candidates": window * 2}
+    if selected_sources:
+        knn_body["filter"] = {"terms": {"source": selected_sources}}
+
     knn_resp = client.search(
         index=INDEX_NAME,
-        body={"knn": {"field": "dense_vector", "query_vector": query_vector, "k": window, "num_candidates": window * 2}, "size": window},
+        body={"knn": knn_body, "size": window},
     )
     knn_hits = {}
     for h in knn_resp["hits"]["hits"]:

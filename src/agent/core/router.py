@@ -78,8 +78,13 @@ Analyze the conversation and latest user message, then output a single JSON with
 
 4. subtask : 이번 턴 수행할 작업 설명 (한국어 1~2문장).
 
+5. suggested_depth : 대화 맥락을 분석하여 소크라테스 깊이를 동적으로 조절 (0=Light, 1=Standard, 2=Deep, null=변경없음).
+   - 학생이 좌절(frustration >= 2)하거나 빠른 답을 강하게 요구하면 0
+   - 학생이 매우 진취적이고 더 깊은 원리/예외 상황을 묻는 등 도전을 원하면 2
+   - 그 외 일반적인 진행이거나 확신이 없으면 null
+
 Frustration level: {frustration_level} (0=none, 높을수록 더 좌절함)
-Socratic depth: {depth_mode}
+Socratic depth: {depth_mode} (현재 깊이: {depth_int})
 Evaluator feedback (retry 시): "{eval_feedback}"
 Quiz in progress: {quiz_in_progress} (True면 퀴즈 진행 중 — "정답 알려줘" 등은 반드시 "escape"로 분류)
 
@@ -94,7 +99,8 @@ Respond ONLY in JSON:
   "rewritten_query": "<한국어 쿼리>",
   "route": "learn" | "chat" | "tools" | "escape",
   "active_agents": ["retrieval", "socratic"],
-  "subtask": "<한국어 작업 설명>"
+  "subtask": "<한국어 작업 설명>",
+  "suggested_depth": 0 | 1 | 2 | null
 }}"""
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -151,6 +157,7 @@ def router(state: AgentState) -> AgentState:
     prompt = ROUTER_PROMPT.format(
         frustration_level=frustration_count,
         depth_mode=depth_mode,
+        depth_int=state.get("socratic_depth", 1),
         eval_feedback=eval_feedback,
         quiz_in_progress=quiz_in_progress,
         history_text=history_text,
@@ -174,6 +181,7 @@ def router(state: AgentState) -> AgentState:
         route = parsed.get("route", "learn").strip().lower()
         active_agents = parsed.get("active_agents", [])
         subtask = parsed.get("subtask", "")
+        suggested_depth = parsed.get("suggested_depth", None)
     except Exception as e:
         # 파싱 실패 시 원문 사용 + 키워드 기반 rule로 라우팅
         logger.warning(f"Router JSON 파싱 실패: {e} — rule-based fallback 적용")
@@ -181,6 +189,7 @@ def router(state: AgentState) -> AgentState:
         route = "tools" if _needs_tools(last_message) else "learn"
         active_agents = [] if route == "tools" else ["retrieval", "socratic"]
         subtask = last_message
+        suggested_depth = None
 
     # ── 5. 후처리 ────────────────────────────────────────────────
 
@@ -219,6 +228,10 @@ def router(state: AgentState) -> AgentState:
     state["active_agents"] = active_agents
     state["subtask"] = subtask
 
+    if suggested_depth in (0, 1, 2) and suggested_depth != state.get("socratic_depth"):
+        logger.info(f"동적 깊이 조절: {state.get('socratic_depth')} -> {suggested_depth}")
+        state["socratic_depth"] = suggested_depth
+
     logger.info(f"route={route} | active_agents={active_agents} | query='{rewritten_query}'")
     _log_trace(
         step="Router",
@@ -235,6 +248,7 @@ def router(state: AgentState) -> AgentState:
             "route": route,
             "active_agents": active_agents,
             "subtask": subtask,
+            "suggested_depth": suggested_depth,
         },
     )
     return state

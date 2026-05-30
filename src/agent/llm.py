@@ -15,6 +15,8 @@ logger = logging.getLogger("SocrAItes.Agent")
 
 if os.getenv("OPENAI_API_KEY"):
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    # 성능 핵심 노드(socratic_agent) 전용 상위 모델
+    llm_strong = ChatOpenAI(model="gpt-4o", temperature=0)
 else:
     # Mock LLM for testing frontend when API key is missing
     from langchain_core.language_models.fake import FakeListLLM
@@ -25,6 +27,7 @@ else:
         "How would you explain the CAP theorem in your own words?",
         '{"scores": {"socratic": 4, "grounding": 3, "encouragement": 4, "clarity": 4}, "pass": true, "feedback": ""}',
     ])
+    llm_strong = llm  # API 키 없으면 동일 mock 사용
 
 
 # ---------------------------------------------------------------------------
