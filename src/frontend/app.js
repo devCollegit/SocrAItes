@@ -614,7 +614,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Fetch and render registered PDF documents
     async function fetchRegisteredDocuments() {
         try {
-            const response = await fetch('/documents');
+            const response = await fetch(`/documents?ts=${Date.now()}`, {
+                cache: 'no-store'
+            });
             if (!response.ok) throw new Error('Failed to fetch documents');
             const data = await response.json();
             

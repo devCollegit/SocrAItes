@@ -2,14 +2,14 @@
 
 route별 처리:
 - "learn"  : socratic_agent의 <question> 부분만 노출
-- "escape" + pending_quiz : pending_quiz에서 정답 직접 추출 (LLM 0회)
+- "escape" + pending_quiz : 정답 비공개 + 힌트/제출 유도 (LLM 0회)
 - "escape" + no quiz : socratic_agent의 <answer> 부분만 노출
 - "tools"  : 도구 실행 결과를 LLM으로 합성
 - 퀴즈 채점: 사용자가 답안 제출 시 채점 결과 반환
 
 우선순위:
 1. 퀴즈 채점 (pending_quiz + 답안 제출)
-2. escape + pending_quiz → 정답 직접 포맷 (LLM 없음)
+2. escape + pending_quiz → 정답 비공개 안내 (LLM 없음)
 3. escape + no quiz → tutor_response의 <answer> 추출
 4. tool_result 내 도구 실행 결과 (퀴즈 생성, 약점/일정 저장)
 5. tutor_response의 <question> 추출 (learn route 기본)
@@ -123,14 +123,18 @@ def composer(state: AgentState) -> AgentState:
         _log_trace(step="Composer", purpose="퀴즈 답안 채점.", decision="채점 결과 → response.")
         return state
 
-    # ── 2. escape + 퀴즈 중 → 정답 직접 추출 (LLM 0회) ──────────
-    # pending_quiz에 이미 answer 필드가 있으므로 규칙 기반으로 포맷만 한다.
+    # ── 2. escape + 퀴즈 중 → 정답 비공개 + 힌트/제출 유도 (LLM 0회) ──
+    # 퀴즈 학습 효과를 위해 진행 중에는 정답을 즉시 공개하지 않는다.
     if route == "escape" and pending_quiz:
-        state["response"] = _format_quiz_escape(pending_quiz)
-        state["pending_quiz"] = []   # 정답 공개 후 퀴즈 종료
+        state["response"] = (
+            "퀴즈 진행 중에는 정답을 바로 공개하지 않아요.\n"
+            "'채점하기'로 제출하면 문항별 피드백을 드릴게요.\n"
+            "원하면 '힌트 줘'라고 말해주면 정답 없이 풀이 힌트를 줄게요."
+        )
+        # 퀴즈 상태 유지: 사용자가 이어서 답안을 제출할 수 있어야 함
         state["tool_results"] = []
-        logger.info("escape route + pending_quiz → 퀴즈 정답 직접 포맷.")
-        _log_trace(step="Composer", purpose="퀴즈 escape 정답 포맷 (LLM 없음).", decision="pending_quiz → response.")
+        logger.info("escape route + pending_quiz → 정답 비공개 안내 응답.")
+        _log_trace(step="Composer", purpose="퀴즈 escape 정답 비공개 응답 (LLM 없음).", decision="pending_quiz 유지 + 안내 response.")
         return state
 
     # ── 3. escape + 일반 질문 → <answer> 추출 ────────────────────
