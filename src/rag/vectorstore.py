@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 
 from elasticsearch import Elasticsearch
 from elasticsearch.helpers import bulk
@@ -101,6 +101,54 @@ def _rrf(rankings: list[list[str]], k: int = 60) -> dict[str, float]:
     return scores
 
 
+def _apply_source_coherence(
+    sorted_docs: List[Tuple[str, float]],
+    all_docs: Dict[str, Dict[str, Any]],
+    k: int,
+) -> List[Tuple[str, float]]:
+    """Re-rank with mild source coherence to reduce cross-document contamination.
+
+    When multiple PDFs are indexed, top-k can contain unrelated sources for focused
+    questions. This keeps the dominant source first while still allowing diversity.
+    """
+    if not sorted_docs:
+        return []
+
+    source_score_sum: Dict[str, float] = {}
+    for doc_id, score in sorted_docs:
+        src = all_docs.get(doc_id, {}).get("source", "Unknown")
+        source_score_sum[src] = source_score_sum.get(src, 0.0) + score
+
+    if len(source_score_sum) <= 1:
+        return sorted_docs[:k]
+
+    dominant_source = max(source_score_sum.items(), key=lambda x: x[1])[0]
+    total = sum(source_score_sum.values()) or 1.0
+    dominance_ratio = source_score_sum[dominant_source] / total
+
+    dominant_docs = []
+    other_docs = []
+    for item in sorted_docs:
+        doc_id, _ = item
+        src = all_docs.get(doc_id, {}).get("source", "Unknown")
+        if src == dominant_source:
+            dominant_docs.append(item)
+        else:
+            other_docs.append(item)
+
+    if dominance_ratio >= 0.45:
+        # Focused query: prioritize dominant source heavily.
+        cap = max(1, int(k * 0.8))
+    else:
+        # Ambiguous query: still prefer dominant source but keep more diversity.
+        cap = max(1, int(k * 0.6))
+
+    selected = dominant_docs[:cap]
+    if len(selected) < k:
+        selected.extend(other_docs[: (k - len(selected))])
+    return selected[:k]
+
+
 SIMILARITY_THRESHOLD = float(os.getenv("SOCRAITES_SIMILARITY_THRESHOLD", "0.4"))
 
 
@@ -190,7 +238,8 @@ def query(query_text: str, k: int = 5, selected_sources: list[str] | None = None
 
     # 필터링된 결과로 RRF 합산
     rrf_scores = _rrf([filtered_bm25_ranking, filtered_knn_ranking])
-    top_k = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:k]
+    sorted_docs = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+    top_k = _apply_source_coherence(sorted_docs, all_docs, k)
 
     return [
         {
