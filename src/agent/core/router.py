@@ -13,7 +13,7 @@ import os
 import re
 import json
 import logging
-from typing import List
+from typing import List, Optional
 
 from langchain_core.messages import HumanMessage
 
@@ -63,6 +63,37 @@ def _has_explicit_tool_intent(text: str) -> bool:
         "복습일정", "일정잡", "일정등록", "리마인드", "스케줄",
     ]
     return any(p in clean for p in explicit_patterns)
+
+
+def _suggest_depth_by_rules(
+    text: str,
+    route: str,
+    frustration_count: int,
+) -> Optional[int]:
+    """Rule-based backup for adaptive depth (F5).
+
+    Returns:
+      0/1/2 when a strong depth signal is detected, else None.
+    """
+    clean = text.replace(" ", "").lower()
+
+    # If user explicitly asks to stop Socratic style, keep interaction shallow.
+    if route == "escape":
+        return 0
+
+    # Frustration/blocked signals -> lower depth for quicker scaffolding.
+    if frustration_count >= 2 or _detect_frustration(text):
+        return 0
+
+    # Deep-dive intent signals -> raise depth for advanced probing.
+    deep_signals = [
+        "깊게", "심화", "원리", "예외", "한계", "tradeoff", "트레이드오프",
+        "증명", "수식", "비교분석", "근거", "왜그런지", "어떻게작동",
+    ]
+    if route == "learn" and any(s in clean for s in deep_signals):
+        return 2
+
+    return None
 
 # ──────────────────────────────────────────────────────────────────────────────
 # LLM 프롬프트
@@ -259,6 +290,13 @@ def router(state: AgentState) -> AgentState:
     state["route"] = route
     state["active_agents"] = active_agents
     state["subtask"] = subtask
+
+    if suggested_depth not in (0, 1, 2):
+        suggested_depth = _suggest_depth_by_rules(
+            text=last_message,
+            route=route,
+            frustration_count=frustration_count,
+        )
 
     if suggested_depth in (0, 1, 2) and suggested_depth != state.get("socratic_depth"):
         logger.info(f"동적 깊이 조절: {state.get('socratic_depth')} -> {suggested_depth}")
