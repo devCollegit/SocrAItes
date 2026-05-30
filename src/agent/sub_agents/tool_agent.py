@@ -19,6 +19,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 from src.agent.state import AgentState
 from src.agent.llm import llm, _get_content, _extract_tool_calls, _run_tool_calls, LANGCHAIN_TOOLS
+from src.tools.learning_tools import LANGCHAIN_TOOLS_DEEP
 from src.agent.helpers import _log_trace
 
 logger = logging.getLogger("SocrAItes.Agent")
@@ -183,6 +184,7 @@ def tool_agent(state: AgentState) -> AgentState:
     logger.info("--- [Tool Agent] Step ---")
     route = state.get("route", "learn")
     active_agents = state.get("active_agents", [])
+    depth = state.get("socratic_depth", 1)
 
     # ── 실행 여부 판단 ────────────────────────────────────────────
     # escape: socratic_agent가 <answer>를 생성하므로 도구 호출 불필요
@@ -225,7 +227,8 @@ def tool_agent(state: AgentState) -> AgentState:
             messages_for_llm.append(AIMessage(content=m["content"]))
 
     # ── 도구 바인딩 LLM 호출 ─────────────────────────────────────
-    response = llm.bind_tools(LANGCHAIN_TOOLS).invoke(messages_for_llm)
+    _active_tools = LANGCHAIN_TOOLS_DEEP if depth == 2 else LANGCHAIN_TOOLS
+    response = llm.bind_tools(_active_tools).invoke(messages_for_llm)
     analysis_text = _get_content(response)
     tool_calls = _extract_tool_calls(response)
 

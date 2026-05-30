@@ -10,3 +10,5 @@ streamlit
 fastapi
 uvicorn
 PyMuPDF
+tavily-python
+langchain-community
