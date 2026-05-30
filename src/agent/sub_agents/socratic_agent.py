@@ -18,6 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from src.agent.state import AgentState
 from src.agent.llm import llm, llm_strong, _get_content
+from src.tools.learning_tools import search_web
 from src.agent.helpers import _log_trace, _is_summary_request
 
 logger = logging.getLogger("SocrAItes.Agent")
@@ -124,6 +125,36 @@ Conversation history:
 {history}"""
 
 # ──────────────────────────────────────────────────────────────────────────────
+# 깊이별 모드 지침
+# ──────────────────────────────────────────────────────────────────────────────
+
+_DEPTH_INSTRUCTIONS: dict = {
+    0: (
+        "Light 모드 — 힌트 중심, 빠른 개념 확인:\n"
+        "- 가장 쉬운 선행 개념 한 가지만 묻는다.\n"
+        "- 학생이 부분적으로라도 이해를 보이면 즉시 칭찬하고 정답을 알려준다.\n"
+        "- 질문은 단답형 또는 짧은 서술형으로 구성한다.\n"
+        "- 학생이 막히면 즉시 쉬운 비유·예시를 먼저 제공하고 확인 질문으로 마무리.\n"
+        "- 빠른 피드백과 친절한 어조를 유지한다."
+    ),
+    1: (
+        "Standard 모드 — 단계적 개념 탐구:\n"
+        "- 개념 이해를 단계적으로 쌓아가며 최대 4회 반문한다.\n"
+        "- 연관 개념을 연결하는 질문으로 이해 깊이를 확인한다.\n"
+        "- 부분적 이해는 인정하고, 빠진 부분만 채우도록 유도한다.\n"
+        "- 학생이 2회 연속 모른다고 하면 힌트와 함께 질문 범위를 좁힌다."
+    ),
+    2: (
+        "Deep 모드 — 순수 소크라테스식 심층 탐구:\n"
+        "- 전제 자체를 의심하는 질문, 가설 설정, 개념 간 연결을 유도한다.\n"
+        "- '왜 그렇게 생각하나요?', '그 가정이 틀린다면 어떻게 되나요?' 형태의 메타 질문 권장.\n"
+        "- 강의 자료를 넘어 실제 사례·최신 연구·실무 응용까지 확장한다.\n"
+        "- 웹 검색 결과가 컨텍스트에 포함된 경우 적극 활용해 심층 질문을 구성한다.\n"
+        "- 개념 간 상위 연결(메타 수준)을 묻는 질문을 적극 활용한다."
+    ),
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
 # 메인 노드 함수
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -191,6 +222,32 @@ def socratic_agent(state: AgentState) -> AgentState:
     context = "\n".join(d["text"] for d in docs) if docs else "강의 자료 없음."
     last_msg = history[-1]["content"] if history else ""
 
+    # ── Deep 모드: 웹 검색으로 컨텍스트 보강 ─────────────────────
+    if depth == 2 and last_msg:
+        _search_decision_prompt = (
+            f"강의 자료:\n{context[:1000]}\n\n"
+            f"학생 질문: {last_msg}\n\n"
+            "강의 자료만으로 학생 질문에 충분히 답할 수 있나?\n"
+            "충분하면 'NO_SEARCH', 검색이 필요하면 'SEARCH: <검색어>'만 출력해. 다른 말은 하지 마."
+        )
+        try:
+            _decision = _get_content(
+                llm.invoke([HumanMessage(content=_search_decision_prompt)])
+            ).strip()
+            if _decision.upper().startswith("SEARCH:"):
+                _query = _decision[7:].strip()
+                if _query:
+                    _result = search_web({"query": _query, "max_results": 3})
+                    if _result.get("status") == "success" and _result.get("results"):
+                        _snippets = "\n\n".join(
+                            f"[{r['title']}]\n{r['content'][:500]}"
+                            for r in _result["results"]
+                        )
+                        context += f"\n\n[웹 검색 결과: '{_query}']\n{_snippets}"
+                        logger.info("Deep 모드 웹 검색 완료: query=%s", _query)
+        except Exception as _e:
+            logger.warning("Deep 모드 웹 검색 실패: %s", _e)
+
     # ── 요약 요청 감지 → 프롬프트 앞단에 오버라이드 삽입 ─────────
     # "요약해줘", "정리해줘" 등의 요청 시 구조화된 요약 먼저 제공하도록 지시
     is_summary = _is_summary_request(last_msg) or _is_summary_request(
@@ -218,8 +275,10 @@ def socratic_agent(state: AgentState) -> AgentState:
         )
     else:
         _MODE_NAMES = {0: "Light", 1: "Standard", 2: "Deep"}
+        _mode_instruction = _DEPTH_INSTRUCTIONS.get(depth, _DEPTH_INSTRUCTIONS[1])
         depth_guide = (
-            f"모드: {_MODE_NAMES.get(depth, 'Standard')} — 최대 {max_turns}회 반문.\n"
+            f"{_mode_instruction}\n\n"
+            f"진행 상황: {_MODE_NAMES.get(depth, 'Standard')} 모드 — 최대 {max_turns}회 반문.\n"
             f"현재까지 반문 횟수: {tutor_question_count}회 / 남은 횟수: {turns_left}회.\n"
             f"남은 횟수가 0이 되면 다음 응답에서 반드시 직접 설명으로 전환한다."
         )

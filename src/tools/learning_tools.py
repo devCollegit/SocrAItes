@@ -537,6 +537,49 @@ def _tool_save_strength(
         "user_id": user_id,
     })
 
+# ---------------------------------------------------------------------------
+# Web Search Tool (Deep 모드 전용 — Tavily)
+# ---------------------------------------------------------------------------
+
+class SearchRequest(BaseModel):
+    query: str = Field(..., description="검색할 질문 또는 키워드")
+    max_results: int = Field(3, ge=1, le=5, description="반환할 검색 결과 수")
+
+
+def search_web(request: Dict[str, Any]) -> Dict[str, Any]:
+    """Tavily를 이용해 웹 검색 후 결과를 반환한다. Deep 모드 전용."""
+    req = SearchRequest(**request)
+    logger.info("search_web called: query=%s", req.query)
+
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        return {"status": "error", "message": "TAVILY_API_KEY가 설정되지 않았습니다."}
+
+    try:
+        from tavily import TavilyClient
+        client = TavilyClient(api_key=api_key)
+        response = client.search(
+            query=req.query,
+            max_results=req.max_results,
+            search_depth="advanced",
+        )
+        results = [
+            {"title": r.get("title", ""), "url": r.get("url", ""), "content": r.get("content", "")}
+            for r in response.get("results", [])
+        ]
+        res = {"status": "success", "query": req.query, "results": results}
+    except Exception as e:
+        logger.warning("Tavily search failed: %s", e)
+        res = {"status": "error", "message": str(e)}
+
+    _log_tool_trace("search_web", request, res)
+    return res
+
+
+def _tool_search_web(query: str, max_results: int = 3) -> Dict[str, Any]:
+    return search_web({"query": query, "max_results": max_results})
+
+
 # Export a mapping for LangChain function calling registration.
 TOOL_MAP = {
     "generate_quiz": generate_quiz,
@@ -544,8 +587,15 @@ TOOL_MAP = {
     "save_weakness": save_weakness,
     "update_user_profile": update_user_profile,
     "save_strength": save_strength,
+    "search_web": search_web,
 }
 
+
+_SEARCH_WEB_TOOL = StructuredTool.from_function(
+    name="search_web",
+    description="Deep 모드 전용: 강의자료에 없는 최신 정보나 추가 맥락이 필요할 때 웹 검색을 수행한다.",
+    func=_tool_search_web,
+)
 
 LANGCHAIN_TOOLS: List[StructuredTool] = [
     StructuredTool.from_function(
@@ -574,3 +624,6 @@ LANGCHAIN_TOOLS: List[StructuredTool] = [
         func=_tool_save_strength,
     ),
 ]
+
+# Deep 모드 전용 툴 목록 (search_web 포함)
+LANGCHAIN_TOOLS_DEEP: List[StructuredTool] = LANGCHAIN_TOOLS + [_SEARCH_WEB_TOOL]
