@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import shutil
 import uuid
 import os
@@ -53,6 +53,18 @@ from .db.database import (
 app = FastAPI(title="SocrAItes API")
 init_db()
 
+
+@app.middleware("http")
+async def frontend_no_cache_middleware(request: Request, call_next):
+    """Force fresh frontend assets to prevent stale CSS/JS in external browsers."""
+    response = await call_next(request)
+    path = request.url.path or ""
+    if path == "/" or path.startswith("/frontend/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 # Ensure uploads directory exists
 UPLOAD_DIR = "temp_uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -66,7 +78,14 @@ app.mount("/frontend", StaticFiles(directory=frontend_path), name="frontend")
 
 @app.get("/")
 async def read_index():
-    return FileResponse(os.path.join(frontend_path, "index.html"))
+    return FileResponse(
+        os.path.join(frontend_path, "index.html"),
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
+    )
 
 # Enable CORS for frontend development
 app.add_middleware(
@@ -153,7 +172,9 @@ async def chat(request: ChatRequest):
             "session_id": session_id,
             "pending_quiz": restored_pending_quiz,
             "user_profile": user_profile,
-            "selected_docs": request.selected_docs if request.selected_docs is not None else [],
+            # None means "no source filter" (search across all indexed docs).
+            # Treat empty selection the same as None to avoid unintended retrieval skip.
+            "selected_docs": request.selected_docs if request.selected_docs else None,
         })
         
         runnable = GRAPH.compile()
@@ -344,10 +365,10 @@ async def get_session_messages(session_id: str):
 
 
 @app.get("/weaknesses")
-async def list_weaknesses():
+async def list_weaknesses(user_id: str = "default"):
     """미해결 약점 목록 반환 (최신순)."""
     try:
-        items = get_weaknesses(resolved=False)
+        items = get_weaknesses(resolved=False, user_id=user_id)
         return {"weaknesses": items}
     except Exception as e:
         logger.error(f"[/weaknesses] Error: {e}")
@@ -390,7 +411,10 @@ async def remove_schedule(schedule_id: int):
 def _parse_iso_dt(value: str) -> datetime:
     """Parse ISO datetime with light normalization for trailing Z."""
     normalized = value.replace("Z", "+00:00")
-    return datetime.fromisoformat(normalized)
+    dt = datetime.fromisoformat(normalized)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
 
 
 def _infer_category(concept: str) -> str:
@@ -407,11 +431,30 @@ def _infer_category(concept: str) -> str:
     return "기타"
 
 
+def _weakness_priority_score(item: dict, now: datetime) -> float:
+    """Compute a simple priority score for weaknesses.
+
+    score = severity_weight + recency_weight
+      - severity: 1..5 -> 1.0..5.0
+      - recency: last 7 days -> up to +2.0
+    """
+    severity = float(item.get("severity") or 1)
+    recency = 0.0
+    created_at = item.get("created_at")
+    if created_at:
+        try:
+            age_days = max(0.0, (now - _parse_iso_dt(created_at)).total_seconds() / 86400.0)
+            recency = max(0.0, 2.0 - min(2.0, age_days / 3.5))
+        except Exception:
+            recency = 0.0
+    return round(severity + recency, 3)
+
+
 @app.get("/recommend-chips")
 async def recommend_chips():
     """Return personalized quick-start chips based on pending schedules and weaknesses."""
     try:
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         horizon = now + timedelta(days=7)
 
         schedules = get_pending_schedules()
@@ -467,19 +510,23 @@ async def recommend_chips():
 async def get_report_data(user_id: str = "default"):
     """Aggregate strengths, weaknesses, profile, and stats for metacognition report UI."""
     try:
-        weaknesses = get_weaknesses(resolved=False, limit=100)
+        weaknesses = get_weaknesses(resolved=False, limit=100, user_id=user_id)
         strengths = get_user_strengths(user_id=user_id, limit=100)
         profile = get_user_profile(user_id=user_id)
 
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         recent_7d_weaknesses = 0
+        previous_7d_weaknesses = 0
         category_counter: Dict[str, int] = {}
         for w in weaknesses:
             created_at = w.get("created_at")
             if created_at:
                 try:
-                    if _parse_iso_dt(created_at) >= (now - timedelta(days=7)):
+                    ts = _parse_iso_dt(created_at)
+                    if ts >= (now - timedelta(days=7)):
                         recent_7d_weaknesses += 1
+                    elif (now - timedelta(days=14)) <= ts < (now - timedelta(days=7)):
+                        previous_7d_weaknesses += 1
                 except Exception:
                     pass
             category = _infer_category(w.get("concept", ""))
@@ -487,10 +534,31 @@ async def get_report_data(user_id: str = "default"):
 
         top_categories = [k for k, _ in sorted(category_counter.items(), key=lambda kv: kv[1], reverse=True)[:3]]
 
+        prioritized_weaknesses = []
+        for w in weaknesses:
+            score = _weakness_priority_score(w, now)
+            prioritized_weaknesses.append({
+                "id": w.get("id"),
+                "concept": w.get("concept", "개념"),
+                "severity": w.get("severity", 1),
+                "created_at": w.get("created_at"),
+                "priority_score": score,
+                "category": _infer_category(w.get("concept", "")),
+            })
+        prioritized_weaknesses.sort(key=lambda x: x["priority_score"], reverse=True)
+
+        trend = "steady"
+        if recent_7d_weaknesses > previous_7d_weaknesses:
+            trend = "worse"
+        elif recent_7d_weaknesses < previous_7d_weaknesses:
+            trend = "improving"
+
         stats = {
             "total_weaknesses": len(weaknesses),
             "total_strengths": len(strengths),
             "recent_7d_weaknesses": recent_7d_weaknesses,
+            "previous_7d_weaknesses": previous_7d_weaknesses,
+            "weekly_trend": trend,
             "top_categories": top_categories,
         }
 
@@ -503,6 +571,7 @@ async def get_report_data(user_id: str = "default"):
                 "learning_style": profile.get("learning_style", "conceptual"),
             },
             "stats": stats,
+            "prioritized_weaknesses": prioritized_weaknesses[:10],
         }
     except Exception as e:
         logger.error(f"[/report-data] Error: {e}", exc_info=True)
@@ -532,12 +601,18 @@ async def generate_report(payload: dict | None = None):
         strengths = report_data.get("strengths", [])
         profile_summary = report_data.get("profile_summary", {})
         stats = report_data.get("stats", {})
+        prioritized = report_data.get("prioritized_weaknesses", [])
 
         strengths_lines = [f"- {s.get('concept', '개념')}" for s in strengths[:12]] or ["- (기록 없음)"]
         weakness_lines = [
             f"- {w.get('concept', '개념')} (심각도 {w.get('severity', 1)})"
             for w in weaknesses[:12]
         ] or ["- (기록 없음)"]
+
+        priority_lines = [
+            f"- {w.get('concept', '개념')} (score={w.get('priority_score')}, category={w.get('category')})"
+            for w in prioritized[:5]
+        ] or ["- (우선순위 데이터 없음)"]
 
         prompt = (
             "당신은 학습 코치입니다. 아래 학습 데이터를 바탕으로 한국어 메타인지 리포트를 마크다운으로 작성하세요.\n"
@@ -548,11 +623,14 @@ async def generate_report(payload: dict | None = None):
             f"강점 요약: {profile_summary.get('strengths_summary', '')}\n"
             f"약점 요약: {profile_summary.get('weaknesses_summary', '')}\n"
             f"학습 스타일: {profile_summary.get('learning_style', 'conceptual')}\n"
-            f"통계: total_weaknesses={stats.get('total_weaknesses', 0)}, total_strengths={stats.get('total_strengths', 0)}, recent_7d_weaknesses={stats.get('recent_7d_weaknesses', 0)}, top_categories={stats.get('top_categories', [])}\n\n"
+            f"통계: total_weaknesses={stats.get('total_weaknesses', 0)}, total_strengths={stats.get('total_strengths', 0)}, recent_7d_weaknesses={stats.get('recent_7d_weaknesses', 0)}, previous_7d_weaknesses={stats.get('previous_7d_weaknesses', 0)}, weekly_trend={stats.get('weekly_trend')}, top_categories={stats.get('top_categories', [])}\n\n"
+            f"우선순위 약점 TOP5:\n{chr(10).join(priority_lines)}\n\n"
             "[출력 형식]\n"
             "## ✅ 잘 이해하고 있는 것\n"
             "## 🔴 보완이 필요한 것\n"
             "## 💡 다음 학습 권장 순서 (3단계)\n"
+            "## 📌 이번 주 우선순위 약점 TOP3\n"
+            "## 📉 최근 2주 추세 해석\n"
             "## 📈 총평\n"
         )
 
@@ -573,11 +651,17 @@ async def generate_report(payload: dict | None = None):
                 + "1. 심각도 높은 약점 1개를 선택해 개념 정의를 스스로 설명해보기\n"
                 + "2. 선택한 약점으로 3문항 퀴즈를 풀고 오답 이유를 정리하기\n"
                 + "3. 48시간 내 같은 개념을 다시 복습해 장기기억으로 전환하기\n"
+                + "\n## 📌 이번 주 우선순위 약점 TOP3\n"
+                + ("\n".join(priority_lines[:3]) if priority_lines else "- (데이터 없음)")
+                + "\n\n## 📉 최근 2주 추세 해석\n"
+                + f"- 최근 7일 약점: {stats.get('recent_7d_weaknesses', 0)}개\n"
+                + f"- 이전 7일 약점: {stats.get('previous_7d_weaknesses', 0)}개\n"
+                + f"- 추세: {stats.get('weekly_trend', 'steady')}\n"
                 + "\n## 📈 총평\n"
                 + f"약점 {stats.get('total_weaknesses', 0)}개, 강점 {stats.get('total_strengths', 0)}개 기반으로 다음 학습 우선순위를 재정렬해야 합니다."
             )
 
-        title = f"메타인지 리포트 ({datetime.now().strftime('%Y-%m-%d')})"
+        title = f"메타인지 리포트 ({datetime.now(timezone.utc).strftime('%Y-%m-%d')})"
         report_id = save_report(title=title, body=generated_body, user_id=user_id)
 
         return {

@@ -342,14 +342,25 @@ def delete_weakness(weakness_id: int) -> bool:
 def get_weaknesses(
     resolved: Optional[bool] = None,
     limit: int = 100,
+    user_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Return weakness records, optionally filtered by resolved status."""
     conn = get_connection()
     query = "SELECT * FROM weaknesses"
     params: list = []
+    clauses: list[str] = []
+
+    if user_id is not None:
+        clauses.append("user_id = ?")
+        params.append(user_id)
+
     if resolved is not None:
-        query += " WHERE resolved = ?"
+        clauses.append("resolved = ?")
         params.append(int(resolved))
+
+    if clauses:
+        query += " WHERE " + " AND ".join(clauses)
+
     query += " ORDER BY created_at DESC LIMIT ?"
     params.append(limit)
     rows = conn.execute(query, params).fetchall()

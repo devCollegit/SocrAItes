@@ -11,7 +11,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, List
 
 from langchain_core.tools import StructuredTool
@@ -21,6 +21,23 @@ from src.db.database import init_db, add_schedule, save_weakness as db_save_weak
 from src.agent.helpers import _log_tool_trace
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    """Return timezone-aware UTC now."""
+    return datetime.now(timezone.utc)
+
+
+def _parse_review_datetime(value: str) -> datetime:
+    """Parse user/tool provided datetime and normalize to UTC.
+
+    - Accepts ISO-8601 with optional trailing ``Z``.
+    - Naive datetime is treated as UTC.
+    """
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 # ---------------------------------------------------------------------------
 # Pydantic schemas – these define the JSON schema exposed to the LLM.
@@ -329,11 +346,25 @@ def schedule_review(request: Dict[str, Any]) -> Dict[str, Any]:
     """
     req = ScheduleRequest(**request)
     logger.info("schedule_review called with %s", req)
+    now_utc = _utc_now()
+
     if req.datetime:
-        review_at = datetime.fromisoformat(req.datetime)
+        try:
+            review_at = _parse_review_datetime(req.datetime)
+        except Exception:
+            logger.warning("Invalid schedule datetime '%s'; defaulting to +7 days UTC", req.datetime)
+            review_at = now_utc + timedelta(days=7)
+
+        # Guardrail: if model/user supplied a past datetime, schedule from current UTC.
+        if review_at < (now_utc - timedelta(minutes=5)):
+            logger.warning(
+                "Past schedule datetime '%s' detected; auto-adjusting to +7 days from current UTC",
+                req.datetime,
+            )
+            review_at = now_utc + timedelta(days=7)
     else:
-        from datetime import timedelta
-        review_at = datetime.now() + timedelta(days=7)
+        review_at = now_utc + timedelta(days=7)
+
     init_db()
     schedule_id = add_schedule(
         review_at=review_at.isoformat(),
