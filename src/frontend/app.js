@@ -823,8 +823,25 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderReportModal(data) {
         const weaknesses = data.weaknesses || [];
         const strengths = data.strengths || [];
+        const prioritizedWeaknesses = data.prioritized_weaknesses || [];
         const profile = data.profile_summary || {};
         const stats = data.stats || {};
+
+        const weaknessById = new Map(weaknesses.map(w => [Number(w.id), w]));
+        const topPriority = prioritizedWeaknesses.length > 0
+            ? prioritizedWeaknesses.slice(0, 5).map(p => ({
+                ...p,
+                ...weaknessById.get(Number(p.id)),
+            }))
+            : [...weaknesses]
+                .sort((a, b) => Number(b.severity || 1) - Number(a.severity || 1))
+                .slice(0, 5)
+                .map(w => ({ ...w, priority_score: Number(w.severity || 1) }));
+
+        const maxPriorityScore = Math.max(
+            1,
+            ...topPriority.map(w => Number(w.priority_score || w.severity || 1))
+        );
 
         const strengthsHtml = strengths.length > 0
             ? strengths.slice(0, 8).map(s => `
@@ -835,23 +852,61 @@ document.addEventListener('DOMContentLoaded', () => {
             `).join('')
             : '<div class="report-empty">아직 기록된 강점이 없습니다.</div>';
 
-        const weaknessesHtml = weaknesses.length > 0
-            ? weaknesses.slice(0, 10).map(w => `
+        const weaknessesHtml = topPriority.length > 0
+            ? topPriority.map(w => {
+                const severity = Math.min(5, Math.max(1, Number(w.severity || 1)));
+                const rawScore = Number(w.priority_score || w.severity || 1);
+                const score = Number.isFinite(rawScore) ? rawScore : Number(w.severity || 1);
+                const ratio = Math.max(12, Math.round((score / maxPriorityScore) * 100));
+                return `
                 <div class="report-card-item weakness">
                     <div class="report-item-main">
                         <span class="report-item-title">${escapeHtml(w.concept)}</span>
-                        <span class="report-severity sev-${Math.min(5, Math.max(1, Number(w.severity || 1)))}">심각도 ${escapeHtml(w.severity || 1)}</span>
+                        <span class="report-severity sev-${severity}">심각도 ${escapeHtml(w.severity || 1)}</span>
+                    </div>
+                    <div class="report-priority-row">
+                        <span class="report-priority-score">${escapeHtml(score.toFixed(2))}</span>
+                        <div class="report-priority-track">
+                            <div class="report-priority-fill" style="width:${ratio}%"></div>
+                        </div>
                     </div>
                     <div class="report-item-actions">
                         <button class="report-review-btn" data-concept="${escapeHtml(w.concept)}">복습하기</button>
                     </div>
                 </div>
-            `).join('')
+                `;
+            }).join('')
             : '<div class="report-empty">현재 등록된 약점이 없습니다.</div>';
 
         const topCategories = (stats.top_categories || []).length > 0
             ? stats.top_categories.map(c => `<span class="report-chip">${escapeHtml(c)}</span>`).join(' ')
             : '<span class="report-empty-inline">분류 데이터 없음</span>';
+
+        const trend = String(stats.weekly_trend || 'steady');
+        const trendLabel = trend === 'worse'
+            ? '악화'
+            : trend === 'improving'
+                ? '개선'
+                : '유지';
+        const trendClass = trend === 'worse'
+            ? 'trend-worse'
+            : trend === 'improving'
+                ? 'trend-improving'
+                : 'trend-steady';
+
+        const recentWeak = Number(stats.recent_7d_weaknesses || 0);
+        const prevWeak = Number(stats.previous_7d_weaknesses || 0);
+        const diff = recentWeak - prevWeak;
+        const diffText = diff > 0 ? `+${diff}` : `${diff}`;
+
+        const actionTargets = topPriority.slice(0, 3);
+        const actionHtml = actionTargets.length > 0
+            ? actionTargets.map((w, idx) => `
+                <button class="report-action-chip" data-concept="${escapeHtml(w.concept)}">
+                    ${idx + 1}. ${escapeHtml(w.concept)} 복습 시작
+                </button>
+            `).join('')
+            : '<div class="report-empty">실행할 약점 항목이 아직 없습니다.</div>';
 
         reportModalBody.innerHTML = `
             <section class="report-section">
@@ -861,7 +916,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </section>
 
             <section class="report-section">
-                <h3>🔴 보완이 필요한 것</h3>
+                <h3>🔴 보완이 필요한 것 (우선순위)</h3>
                 <div class="report-summary">${escapeHtml(profile.weaknesses_summary || '약점 요약이 아직 없습니다.')}</div>
                 <div class="report-card-list">${weaknessesHtml}</div>
             </section>
@@ -874,6 +929,18 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="report-stat"><span class="k">최근 7일 약점</span><span class="v">${escapeHtml(stats.recent_7d_weaknesses || 0)}</span></div>
                 </div>
                 <div class="report-categories">${topCategories}</div>
+                <div class="report-trend ${trendClass}">
+                    <div class="report-trend-main">
+                        <span class="report-trend-label">2주 추세</span>
+                        <span class="report-trend-value">${trendLabel}</span>
+                    </div>
+                    <div class="report-trend-sub">최근 7일 ${recentWeak}건 / 이전 7일 ${prevWeak}건 (${diffText})</div>
+                </div>
+            </section>
+
+            <section class="report-section">
+                <h3>🎯 지금 바로 실행할 복습</h3>
+                <div class="report-action-row">${actionHtml}</div>
             </section>
 
             <section class="report-section" id="report-generated-area"></section>
@@ -888,6 +955,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 sendMessage();
             });
         });
+
+        reportModalBody.querySelectorAll('.report-action-chip').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const concept = btn.dataset.concept;
+                reportModal.style.display = 'none';
+                userInput.value = `${concept} 개념을 핵심부터 점검하고 복습 퀴즈 3문항 내줘`;
+                userInput.dispatchEvent(new Event('input'));
+                sendMessage();
+            });
+        });
+    }
+
+    function normalizeReportMarkdown(raw) {
+        const text = String(raw || '').replace(/\r\n/g, '\n').trim();
+        return text
+            .replace(/^(##\s+)/gm, '\n$1')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
     }
 
     async function openReportModal() {
@@ -924,9 +1009,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
             const generatedArea = document.getElementById('report-generated-area');
             if (generatedArea) {
+                const normalizedBody = normalizeReportMarkdown(data.body || '');
                 generatedArea.innerHTML = `
                     <h3>🧠 AI 생성 리포트</h3>
-                    <div class="report-markdown">${marked.parse(data.body || '')}</div>
+                    <div class="report-markdown">${marked.parse(normalizedBody)}</div>
                 `;
             }
         } catch (error) {
