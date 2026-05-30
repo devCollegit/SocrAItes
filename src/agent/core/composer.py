@@ -216,7 +216,6 @@ def composer(state: AgentState) -> AgentState:
         elif state.get("force_explain"):
             extracted = _extract_answer(tutor_response)
             state["response"] = extracted or _extract_question(tutor_response, has_prior_answer=False)
-            state["force_explain"] = False
             logger.info("반문 한도 초과 → <answer> 추출 완료.")
             _log_trace(step="Composer", purpose="한도 초과: <answer> 추출.", decision="<answer> → response.")
         else:

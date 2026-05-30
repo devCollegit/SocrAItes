@@ -397,7 +397,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (role === 'system') {
             contentDiv.innerHTML = `<span class="system-text">${marked.parse(text)}</span>`;
         } else {
-            contentDiv.innerHTML = role === 'ai' ? marked.parse(text) : text.replace(/\n/g, '<br>');
+            contentDiv.innerHTML = role === 'ai' ? marked.parse(text.trim()) : text.replace(/\n/g, '<br>');
         }
         
         bodyDiv.appendChild(contentDiv);
