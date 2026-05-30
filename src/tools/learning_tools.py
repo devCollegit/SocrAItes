@@ -17,7 +17,12 @@ from typing import Dict, Any, List
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from src.db.database import init_db, add_schedule, save_weakness as db_save_weakness
+from src.db.database import (
+    init_db,
+    add_schedule,
+    get_pending_schedules,
+    save_weakness as db_save_weakness,
+)
 from src.agent.helpers import _log_tool_trace
 
 logger = logging.getLogger(__name__)
@@ -38,6 +43,40 @@ def _parse_review_datetime(value: str) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _suggest_default_review_datetime(now_utc: datetime) -> datetime:
+    """Suggest a default review datetime spread across the next 2 weeks.
+
+    Priority offsets are 7, 10, 14 days to avoid piling all auto-schedules on one day.
+    If all are occupied, fallback to 7 + N days.
+    """
+    used_dates: set[str] = set()
+    try:
+        for item in get_pending_schedules():
+            raw = item.get("review_at")
+            if not raw:
+                continue
+            dt = _parse_review_datetime(str(raw))
+            if now_utc <= dt <= (now_utc + timedelta(days=21)):
+                used_dates.add(dt.date().isoformat())
+    except Exception:
+        # If DB lookup fails, fallback safely to +7 days.
+        return now_utc + timedelta(days=7)
+
+    # Keep the original time-of-day to maintain UTC consistency.
+    for offset in (7, 10, 14):
+        candidate = now_utc + timedelta(days=offset)
+        if candidate.date().isoformat() not in used_dates:
+            return candidate
+
+    # Fallback: find the next free date starting from +7d.
+    for offset in range(7, 29):
+        candidate = now_utc + timedelta(days=offset)
+        if candidate.date().isoformat() not in used_dates:
+            return candidate
+
+    return now_utc + timedelta(days=29)
 
 # ---------------------------------------------------------------------------
 # Pydantic schemas – these define the JSON schema exposed to the LLM.
@@ -74,7 +113,7 @@ class WeaknessRecord(BaseModel):
 
     concept: str = Field(..., description="Concept the user is weak on. Infer from conversation context.")
     details: str = Field("학습 중 이해가 어려운 개념으로 식별됨", description="Additional details about the weakness")
-    severity: int = Field(2, ge=1, le=5, description="Weakness severity (1-5)")
+    severity: int | None = Field(None, ge=1, le=5, description="Weakness severity (1-5). If omitted, auto-estimated.")
     session_id: str | None = Field(None, description="Optional session ID")
     user_id: str | None = Field("default", description="Optional user ID")
 
@@ -353,7 +392,7 @@ def schedule_review(request: Dict[str, Any]) -> Dict[str, Any]:
             review_at = _parse_review_datetime(req.datetime)
         except Exception:
             logger.warning("Invalid schedule datetime '%s'; defaulting to +7 days UTC", req.datetime)
-            review_at = now_utc + timedelta(days=7)
+            review_at = _suggest_default_review_datetime(now_utc)
 
         # Guardrail: if model/user supplied a past datetime, schedule from current UTC.
         if review_at < (now_utc - timedelta(minutes=5)):
@@ -361,9 +400,9 @@ def schedule_review(request: Dict[str, Any]) -> Dict[str, Any]:
                 "Past schedule datetime '%s' detected; auto-adjusting to +7 days from current UTC",
                 req.datetime,
             )
-            review_at = now_utc + timedelta(days=7)
+            review_at = _suggest_default_review_datetime(now_utc)
     else:
-        review_at = now_utc + timedelta(days=7)
+        review_at = _suggest_default_review_datetime(now_utc)
 
     init_db()
     schedule_id = add_schedule(
@@ -387,21 +426,109 @@ def save_weakness(request: Dict[str, Any]) -> Dict[str, Any]:
 
     Returns an acknowledgement.
     """
+    def _estimate_weakness_severity(
+        concept: str,
+        details: str,
+        session_id: str | None,
+        user_id: str,
+    ) -> int:
+        """Estimate weakness severity in [1, 5] from context signals.
+
+        Signals:
+        - linguistic difficulty cues (details/concept)
+        - quiz score mention in text (e.g., "40점")
+        - repeated unresolved concept count
+        - recent frustration cues in session messages
+        """
+        score = 2.0
+        text = f"{concept} {details}".lower()
+
+        severe_cues = [
+            "전혀", "완전히", "아예", "너무 어렵", "계속 틀", "반복 오답", "모르겠", "이해가 안",
+        ]
+        moderate_cues = [
+            "헷갈", "어렵", "불확실", "약함", "혼동", "정리가 안", "기억이 안",
+        ]
+        mild_cues = [
+            "조금", "약간", "부분적으로", "살짝", "대체로 이해",
+        ]
+
+        if any(k in text for k in severe_cues):
+            score += 1.5
+        if any(k in text for k in moderate_cues):
+            score += 0.8
+        if any(k in text for k in mild_cues):
+            score -= 0.5
+
+        quiz_scores = [int(m) for m in re.findall(r"(\d{1,3})\s*점", text)]
+        if quiz_scores:
+            min_score = min(quiz_scores)
+            if min_score <= 40:
+                score += 1.5
+            elif min_score <= 60:
+                score += 1.0
+            elif min_score >= 80:
+                score -= 0.5
+
+        try:
+            from src.db.database import get_weaknesses, get_messages
+
+            unresolved = get_weaknesses(resolved=False, limit=300, user_id=user_id)
+            norm_concept = concept.strip().lower().replace(" ", "")
+            repeats = sum(
+                1
+                for w in unresolved
+                if str(w.get("concept", "")).strip().lower().replace(" ", "") == norm_concept
+            )
+            if repeats >= 2:
+                score += 0.8
+            if repeats >= 4:
+                score += 0.7
+
+            if session_id:
+                recent_msgs = get_messages(session_id, limit=16)
+                frustration_cues = ["모르겠", "이해가 안", "어렵", "헷갈", "답답", "막힘"]
+                frustration_hits = 0
+                for msg in recent_msgs:
+                    if msg.get("role") != "user":
+                        continue
+                    c = str(msg.get("content", "")).lower()
+                    if any(k in c for k in frustration_cues):
+                        frustration_hits += 1
+                if frustration_hits >= 2:
+                    score += 0.7
+                if frustration_hits >= 4:
+                    score += 0.5
+        except Exception as e:
+            logger.warning("severity estimation context lookup failed: %s", e)
+
+        return max(1, min(5, int(round(score))))
+
     req = WeaknessRecord(**request)
     logger.info("save_weakness called with %s", req)
+
+    user_id = req.user_id or "default"
+    severity_provided = isinstance(request, dict) and request.get("severity") is not None
+    severity = req.severity if severity_provided and req.severity is not None else _estimate_weakness_severity(
+        concept=req.concept,
+        details=req.details,
+        session_id=req.session_id,
+        user_id=user_id,
+    )
+
     init_db()
     weakness_id = db_save_weakness(
         concept=req.concept,
         details=req.details,
-        severity=req.severity,
+        severity=severity,
         session_id=req.session_id,
-        user_id=req.user_id or "default",
+        user_id=user_id,
     )
     res = {
         "status": "saved",
         "weakness_id": weakness_id,
         "concept": req.concept,
-        "severity": req.severity,
+        "severity": severity,
     }
     _log_tool_trace("save_weakness", request, res)
     return res
@@ -478,7 +605,7 @@ def _tool_schedule_review(datetime: str | None = None, description: str | None =
 def _tool_save_weakness(
     concept: str,
     details: str,
-    severity: int = 2,
+    severity: int | None = None,
     session_id: str | None = None,
     user_id: str | None = "default",
 ) -> Dict[str, Any]:

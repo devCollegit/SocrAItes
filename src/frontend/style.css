@@ -399,6 +399,11 @@ textarea {
     width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
     cursor: pointer; transition: var(--transition);
 }
+
+.char-count {
+    display: none !important;
+}
+
 .send-btn svg { width: 12px !important; height: 12px !important; }
 .send-btn:hover:not(:disabled) { transform: scale(1.1); }
 
@@ -874,6 +879,65 @@ textarea {
     gap: 8px;
     flex: 1;
     min-width: 0;
+}
+
+.message-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.message.user .message-actions {
+    justify-content: flex-end;
+}
+
+.msg-action-btn {
+    appearance: none;
+    -webkit-appearance: none;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--text-muted);
+    width: 28px;
+    height: 28px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.msg-action-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
+.msg-action-btn:hover {
+    color: var(--primary-light);
+    border-color: var(--border-hover);
+    background: rgba(212, 175, 55, 0.12);
+}
+
+.action-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 22px;
+    transform: translateX(-50%) translateY(10px);
+    background: rgba(10, 12, 16, 0.92);
+    color: #f8fafc;
+    border: 1px solid var(--border-hover);
+    border-radius: 999px;
+    padding: 8px 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    opacity: 0;
+    z-index: 3000;
+    pointer-events: none;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.action-toast.visible {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
 }
 
 .message-references {
@@ -1456,6 +1520,56 @@ textarea {
     border-left: 3px solid #ef4444;
 }
 
+.report-weakness-card {
+    background:
+        linear-gradient(120deg, rgba(239, 68, 68, 0.09) 0%, rgba(239, 68, 68, 0.02) 35%, rgba(0, 0, 0, 0.24) 100%);
+    box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.14);
+}
+
+.report-weakness-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.report-weakness-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.report-weakness-index {
+    font-size: 0.66rem;
+    font-weight: 700;
+    color: #fca5a5;
+    border: 1px solid rgba(248, 113, 113, 0.45);
+    background: rgba(127, 29, 29, 0.24);
+    border-radius: 999px;
+    padding: 2px 7px;
+    flex-shrink: 0;
+}
+
+.report-weakness-title {
+    font-size: 0.9rem;
+    letter-spacing: 0.1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.report-weakness-detail {
+    margin-top: 8px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(2, 6, 23, 0.34);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    font-size: 0.74rem;
+    line-height: 1.45;
+    color: var(--text-muted);
+}
+
 .report-item-main {
     display: flex;
     align-items: center;
@@ -1480,37 +1594,43 @@ textarea {
     justify-content: flex-end;
 }
 
-.report-priority-row {
+.report-priority-meta {
     margin-top: 8px;
     display: flex;
     align-items: center;
     gap: 8px;
 }
 
-.report-priority-score {
-    min-width: 42px;
-    text-align: right;
+.report-priority-rank {
     font-size: 0.68rem;
     color: var(--text-muted);
-    font-family: 'JetBrains Mono', monospace;
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px dashed var(--border);
 }
 
-.report-priority-track {
-    position: relative;
-    flex: 1;
-    height: 8px;
+.report-priority-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 2px 8px;
     border-radius: 999px;
-    background: rgba(148, 163, 184, 0.22);
-    overflow: hidden;
 }
 
-.report-priority-fill {
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    border-radius: 999px;
-    background: linear-gradient(90deg, #f97316 0%, #ef4444 55%, #b91c1c 100%);
+.report-priority-label.sev-1,
+.report-priority-label.sev-2 {
+    background: rgba(34, 197, 94, 0.16);
+    color: #22c55e;
+}
+
+.report-priority-label.sev-3 {
+    background: rgba(245, 158, 11, 0.16);
+    color: #f59e0b;
+}
+
+.report-priority-label.sev-4,
+.report-priority-label.sev-5 {
+    background: rgba(239, 68, 68, 0.16);
+    color: #ef4444;
 }
 
 .report-review-btn {
