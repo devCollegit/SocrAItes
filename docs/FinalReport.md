@@ -246,50 +246,79 @@
 
 ### 4.4 LangGraph 에이전트 그래프
 
+다음은 전체 에이전트의 실행 경로를 보여주는 플로우차트입니다. `router` 노드에서 사용자의 입력 및 상태를 분석하여 알맞은 경로로 분기하며, 각 단계를 거쳐 최종적으로 응답을 생성(`END`)합니다.
+
 ```mermaid
 flowchart TD
-    START([START]) --> router
+    START(["&nbsp; START &nbsp;"])
+    
+    router["<span style='font-size:16px'><b>Router</b></span><br><span style='font-size:11px'>쿼리 재작성 및 라우팅</span><hr><b>In:</b> messages, user_profile<br><b>Out:</b> route, rewritten_query,<br>active_agents, subtask"]
+    
+    responder["<span style='font-size:16px'><b>Responder</b></span><br><span style='font-size:11px'>캐주얼 / 잡담 응답</span><hr><b>In:</b> messages<br><b>Out:</b> response"]
+    
+    retrieval["<span style='font-size:16px'><b>Retrieval Agent</b></span><br><span style='font-size:11px'>벡터 스토어 검색</span><hr><b>In:</b> rewritten_query, messages<br><b>Out:</b> retrieved_docs, selected_docs"]
+    
+    socratic["<span style='font-size:16px'><b>Socratic Agent</b></span><br><span style='font-size:11px'>소크라테스식 응답 생성</span><hr><b>In:</b> retrieved_docs, user_profile,<br>frustration_level, socratic_depth<br><b>Out:</b> tutor_response, pending_quiz"]
+    
+    tool["<span style='font-size:16px'><b>Tool Agent</b></span><br><span style='font-size:11px'>학습 도구 호출</span><hr><b>In:</b> messages, subtask, active_agents<br><b>Out:</b> tool_result, tool_results"]
+    
+    composer["<span style='font-size:16px'><b>Composer</b></span><br><span style='font-size:11px'>서브에이전트 결과 조립</span><hr><b>In:</b> tutor_response, tool_result,<br>messages, pending_quiz<br><b>Out:</b> response"]
+    
+    reviewer["<span style='font-size:16px'><b>Reviewer</b></span><br><span style='font-size:11px'>품질 검사 및 평가</span><hr><b>In:</b> response, messages,<br>user_profile, retry_count<br><b>Out:</b> evaluation, retry_count"]
+    
+    END(["&nbsp; END &nbsp;"])
 
-    router -->|"route=learn\n또는 escape (quiz 없음)"| retrieval_agent
-    router -->|"route=chat"| responder
-    router -->|"route=tools"| tool_agent
-    router -->|"route=escape\n+ pending_quiz"| composer
+    %% 진입점
+    START --> router
 
-    retrieval_agent --> socratic_agent
-    socratic_agent --> tool_agent
-    tool_agent --> composer
+    %% Router 조건 분기
+    router -->|"chat"| responder
+    router -->|"tools"| tool
+    router -->|"escape + pending_quiz"| composer
+    router -->|"learn / escape"| retrieval
 
-    composer -->|"should_review = True"| reviewer
-    composer -->|"should_review = False"| END([END])
+    %% Learn 파이프라인
+    retrieval --> socratic
+    socratic --> tool
+    tool --> composer
 
-    reviewer -->|"pass=False &\nretry < MAX_RETRIES(2)"| socratic_agent
-    reviewer -->|"pass=True 또는\n최대 재시도 초과"| END
-
+    %% Chat 종료
     responder --> END
 
-    subgraph "서브에이전트 체인 (learn / escape)"
-        retrieval_agent["retrieval_agent\n벡터 스토어 검색"]
-        socratic_agent["socratic_agent\n소크라테스식 응답 생성"]
-        tool_agent["tool_agent\n학습 도구 호출"]
-    end
+    %% Composer 분기
+    composer -->|"검수 필요"| reviewer
+    composer -->|"검수 불필요"| END
 
-    subgraph "조합 & 품질 검사"
-        composer["composer\n서브에이전트 결과 조합"]
-        reviewer["reviewer\n품질 검사 (조건부)"]
-    end
+    %% Reviewer 피드백 루프
+    reviewer -->|"실패 & retry < MAX"| socratic
+    reviewer -->|"통과 / 재시도 초과"| END
 
-    router["router\n쿼리 재작성 + 라우팅"]
-    responder["responder\n캐주얼 응답 (chat)"]
+    %% 스타일
+    classDef startEnd fill:#2c3e50,stroke:#2c3e50,color:#fff,font-weight:bold;
+    classDef routerNode fill:#e74c3c,stroke:#c0392b,color:#fff,stroke-width:2px;
+    classDef agentNode fill:#2980b9,stroke:#1a5276,color:#fff,stroke-width:2px;
+    classDef outputNode fill:#27ae60,stroke:#1e8449,color:#fff,stroke-width:2px;
+    classDef chatNode fill:#8e44ad,stroke:#6c3483,color:#fff,stroke-width:2px;
 
-    style router fill:#4A90D9,color:#fff
-    style retrieval_agent fill:#7B68EE,color:#fff
-    style socratic_agent fill:#7B68EE,color:#fff
-    style tool_agent fill:#7B68EE,color:#fff
-    style composer fill:#50C878,color:#fff
-    style reviewer fill:#FF8C00,color:#fff
-    style responder fill:#20B2AA,color:#fff
-    style END fill:#888,color:#fff
-    style START fill:#333,color:#fff
+    class START,END startEnd;
+    class router routerNode;
+    class retrieval,socratic,tool agentNode;
+    class composer,reviewer outputNode;
+    class responder chatNode;
+
+    linkStyle 0 stroke:#2c3e50,stroke-width:2px
+    linkStyle 1 stroke:#8e44ad,stroke-width:2px
+    linkStyle 2 stroke:#e67e22,stroke-width:2px
+    linkStyle 3 stroke:#e67e22,stroke-width:2px
+    linkStyle 4 stroke:#2980b9,stroke-width:2px
+    linkStyle 5 stroke:#2980b9,stroke-width:2px
+    linkStyle 6 stroke:#2980b9,stroke-width:2px
+    linkStyle 7 stroke:#2980b9,stroke-width:2px
+    linkStyle 8 stroke:#8e44ad,stroke-width:2px
+    linkStyle 9 stroke:#27ae60,stroke-width:2px
+    linkStyle 10 stroke:#27ae60,stroke-width:2px
+    linkStyle 11 stroke:#e74c3c,stroke-width:2px,stroke-dasharray:5
+    linkStyle 12 stroke:#27ae60,stroke-width:2px
 ```
 
 | 노드 | 역할 | 경로 |
