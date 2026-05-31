@@ -8,12 +8,12 @@
 
 ## 목차
 
-1. [프로젝트 목표와 목적](about:blank#1-%ED%94%84%EB%A1%9C%EC%A0%9D%ED%8A%B8-%EB%AA%A9%ED%91%9C%EC%99%80-%EB%AA%A9%EC%A0%81)
-2. [문제 정의 및 개선 배경](about:blank#2-%EB%AC%B8%EC%A0%9C-%EC%A0%95%EC%9D%98-%EB%B0%8F-%EA%B0%9C%EC%84%A0-%EB%B0%B0%EA%B2%BD)
-3. [마일스톤과 결과물 비교](about:blank#3-%EB%A7%88%EC%9D%BC%EC%8A%A4%ED%86%A4%EA%B3%BC-%EA%B2%B0%EA%B3%BC%EB%AC%BC-%EB%B9%84%EA%B5%90)
-4. [시스템 아키텍처](about:blank#4-%EC%8B%9C%EC%8A%A4%ED%85%9C-%EC%95%84%ED%82%A4%ED%85%8D%EC%B2%98)
-5. [시연](about:blank#5-%EC%8B%9C%EC%97%B0)
-6. [회고](about:blank#6-%ED%9A%8C%EA%B3%A0)
+1. [프로젝트 목표와 목적](#1-프로젝트-목표와-목적)
+2. [문제 정의 및 개선 배경](#2-문제-정의-및-개선-배경)
+3. [마일스톤과 결과물 비교](#3-마일스톤과-결과물-비교)
+4. [시스템 아키텍처](#4-시스템-아키텍처)
+5. [시연](#5-시연)
+6. [회고](#6-회고)
 
 ---
 
@@ -41,7 +41,7 @@
 
 1. **강의자료 기반 RAG**: 교수 제공 PDF를 벡터 DB에 색인하여 환각을 최소화한 답변 생성
 2. **소크라테스식 대화 엔진**: 반문·예시 요구·전제 검토 형식으로 사고 자극
-3. **Adaptive Socratic Depth**: 학습자 좌절 신호 감지 → 힌트·난이도 동적 조절
+3. **Adaptive Socratic Depth**: 학습자 좌절 신호 감지 → 힌트·난이도 동적 조절 (Scaffolding 단계 상승)
 4. **학습 도구 (Function Calling)**: 퀴즈 생성, 복습 일정 등록, 약점 저장, 직답 모드 전환
 5. **약점 진단 & 리포트**: 대화 이력 분석 기반 주간 학습 리포트 및 개인화 프로파일 제공
 
@@ -64,54 +64,9 @@
 
 ### 2.2 개발 과정에서 발견한 문제와 개선
 
-### [문제 A] RAG Top-K 강제 매칭
+### 문제 A: 소크라테스 질문 원칙 정립
 
-- **현상**: 색인된 자료와 무관한 질문(예: "데드락 발생 조건")에도 Elasticsearch가 자연어처리 강의 청크를 억지로 Top-K로 반환하여 에이전트 혼선 발생
-- **원인**: BM25·KNN 하이브리드 검색이 항상 상대적 점수 기준 상위 K개를 반환하도록 설계되어 Out-of-Domain 질문에도 인덱스 내 문서를 강제 반환함
-- **해결**: 코사인 유사도 임계값 필터링 도입
-  - BGE-M3 Dense 벡터 코사인 유사도 **0.4 미만** 청크를 RRF 계산 전 단계에서 원천 제외
-  - 무관 질문 테스트 시 `Retrieved Chunks Count: 0` 확인
-  - 관련 질문 테스트 시 정상 청크 3건 반환 확인
-
-```
-무관 질문 (데드락) → 유사도 0.12~0.28 → 전부 필터아웃 → 빈 컨텍스트
-관련 질문 (NLU)    → 유사도 0.51~0.73 → 통과 → 강의 청크 3건 전달
-```
-
-### [문제 B] 소크라테스 질문 루프 고착
-
-- **현상**: 학생이 "다음 내용 진행해줘"라고 요청해도 Query Contextualizer가 직전 주제(NLU/NLG)로 쿼리를 재생성하여 같은 반문을 무한 반복함
-- **원인**: 쿼리 재구성 로직이 진도 변경 의도를 감지하지 못하고 이전 대화 주제를 그대로 유지함
-- **해결**:
-  - `socratic_agent`에서 `_count_turns_since_topic_start()` 함수로 현재 토픽 기준 반문 횟수를 동적 계산
-  - Router(기존 Coordinator + Planner 통합)에서 `suggested_depth`로 Socratic Depth 동적 조절
-  - `_MAX_TURNS = {0: 2, 1: 4, 2: 6}` 기준으로 반문 한도 초과 시 직접 설명으로 자동 전환
-
-### [문제 C] 도구 호출 타이밍 비결정성
-
-- **현상**: Supervisor가 LLM의 즉흥 판단으로 퀴즈 생성·약점 저장·복습 등록을 호출하여 의도하지 않은 타이밍에 도구 실행됨
-- **해결**: 에이전트 계층 분리 (Sub Agent 도입)
-  - **Router**가 명시적으로 `route = "tools"` 결정 시에만 `tool_agent` 활성화
-  - `route = "learn"` 경로에서는 `retrieval_agent → socratic_agent → composer → reviewer` 순서로만 실행
-  - 도구 호출 시점 예측 가능해지고 불필요한 API 호출 제거됨
-
-### [문제 D] 소크라테스 충실도 미검증
-
-- **현상**: 기존 Reviewer가 항상 `pass=True`를 반환하여 품질 보증 역할 미수행
-- **해결**: 4축 품질 검증 도입 (`src/agent/core/reviewer.py`)
-
-| 축 | 설명 | 기준 |
-| --- | --- | --- |
-| `socratic` | 직접 답변 회피, 소크라테스 질문 사용 여부 | ≥ 3 / 5 |
-| `grounding` | 강의 자료 기반 응답 여부 | ≥ 3 / 5 |
-| `encouragement` | 따뜻하고 격려하는 톤 여부 | ≥ 3 / 5 |
-| `clarity` | 명확하고 구조적인 응답 여부 | ≥ 3 / 5 |
-
-- 4축 점수 중 하나라도 3점 미만이면 Socratic Agent에 재시도 요청 (최대 2회, `MAX_RETRIES = 2`)
-
-### [문제 E] 소크라테스 질문 시작점 애매함
-
-- **현상**: "X가 뭐야?" 형태의 개념 질문에 대해 소크라테스 첫 질문이 개념의 배경이 아닌 내부 구성요소·세부 기법을 직접 묻거나, 다른 개념의 질문 패턴을 복사하여 엉뚱한 질문이 출력됨
+- **현상**: 개념 질문에 대한 소크라테스식 첫 질문이 배경이 아닌 세부 기법을 직접 묻거나 엉뚱한 질문을 함
 - **원인**: 질문 시작점에 대한 명확한 원칙 없이 프롬프트 예시에만 의존하여 LLM이 일관된 출발점을 잡지 못함
 - **해결**: 개념 이해를 위한 소크라테스 접근 원칙 정립
   - 핵심 원칙: 개념을 처음 접하는 학생에게는 **"이 개념이 왜 등장했는가?"** — 즉 해결하려 한 문제·기존 방법의 한계 — 를 먼저 스스로 발견하게 하는 것이 가장 효과적인 출발점임
@@ -119,6 +74,29 @@
   - 배경 문제로 학생을 이끌기 위해 **학생이 이미 알고 있을 선행 개념**으로 질문 구성
   - 개념의 이름·구성요소·세부 기법을 질문에 포함하는 것을 금지 (정답 노출 방지)
   - 강의 자료에서 배경을 찾지 못하면 Tavily 웹 검색으로 자동 보완
+
+### 문제 B: RAG Top-K 강제 매칭
+
+- **현상**: 색인된 자료와 무관한 질문에도 Elasticsearch가 Top-K 반환
+- **원인**: BM25·KNN 하이브리드 검색이 항상 상대적 점수 기준 상위 K개를 반환하도록 설계되어 Out-of-Domain 질문에도 인덱스 내 문서를 강제 반환함
+- **해결**: 코사인 유사도 임계값 필터링 도입
+  - BGE-M3 Dense 벡터 코사인 유사도 **0.4 미만** 청크를 RRF 계산 전 단계에서 제외
+
+### 문제 C: 동일 질문 무한 반복
+
+- **현상**: 학생이 다음 주제 요청 후에도 직전 주제로 쿼리를 재생성하여 같은 질문 반복함
+- **원인**: 쿼리 재구성 로직이 진도 변경 의도를 감지하지 못하고 이전 대화 주제를 그대로 유지함
+- **해결**:
+  - `socratic_agent`에서 `_count_turns_since_topic_start()` 함수로 현재 토픽 기준 반문 횟수를 동적 계산
+  - `_MAX_TURNS = {'light': 2, 'standard': 4, 'deep': 6}` 기준으로 반문 한도 초과 시 직접 설명으로 자동 전환
+
+### 문제 D: 도구 호출 타이밍 최적화
+
+- **현상**: Supervisor가 LLM의 즉흥 판단으로 퀴즈 생성·약점 저장·복습 등록을 호출하여 의도하지 않은 타이밍에 도구 실행됨
+- **해결**: 에이전트 계층 분리 (Sub Agent 도입)
+  - **Router**가 명시적으로 `route = "tools"` 결정 시에만 `tool_agent` 활성화
+  - `route = "learn"` 경로에서는 `retrieval_agent → socratic_agent → composer → reviewer` 순서로만 실행
+  - 도구 호출 시점 예측 가능해지고 불필요한 API 호출 제거됨
 
 ---
 
@@ -131,7 +109,7 @@
 | M1 — 기반 구축 | FastAPI 서버, 기본 RAG (ChromaDB), 소크라테스 페르소나 프롬프트 |
 | M2 — RAG 고도화 | Elasticsearch 하이브리드 검색 (BM25 + KNN + RRF), 문맥 인지 쿼리 재구성 |
 | M3 — Agent 고도화 | LangGraph 멀티노드, Function Calling 4종, Adaptive Socratic Depth |
-| M4 — 개인화 | 사용자 프로파일, 비동기 약점 진단, 주간 학습 리포트 |
+| M4 — 개인화 | 사용자 프로파일, 약점 진단, 주간 학습 리포트 |
 | M5 — 품질 보증 | Sub Agent 분리, 4축 Reviewer, 재시도 루프, 웹 검색 보강 |
 
 ### 3.2 기획 대비 결과물 비교
@@ -159,10 +137,10 @@
 
 | 계층 | 기술 |
 | --- | --- |
-| **LLM** | GPT-4o (Strong), GPT-4o-mini (Fast) |
-| **Embedding** | BAAI/bge-m3 (로컬, 1024차원, MPS/CUDA/CPU 자동 감지) |
+| **LLM** | GPT-4o (Socratic Agent, Reviewer), GPT-4o-mini (나머지) |
+| **Embedding** | BAAI/bge-m3 (로컬, 1024차원) |
 | **Vector DB** | Elasticsearch (BM25 + Dense KNN + RRF 하이브리드) |
-| **Agent Orchestration** | LangGraph (StateGraph) |
+| **Agent Orchestration** | LangGraph |
 | **Backend** | FastAPI (Python, SSE 스트리밍) |
 | **Frontend** | Vanilla HTML/CSS/JavaScript |
 | **Database** | SQLite (대화 이력, 사용자 프로파일, 약점/강점) |
@@ -180,9 +158,9 @@
   - SSE 스트리밍 시작
       │
       ▼
-[LangGraph Agent — StateGraph]
+[LangGraph Agent]
       │
-      ├── [Router]  ← 단일 LLM 호출로 라우팅·쿼리재작성·깊이조절·좌절감지를 동시 처리
+      ├── [Router]  ← 단일 LLM 호출로 라우팅·쿼리 재작성·깊이 조절·좌절 감지를 동시 처리
       │     - 이전 대화 + 최신 입력으로 Standalone 쿼리 재구성
       │     - route 결정: "learn" | "chat" | "tools" | "escape"
       │       ※ tools 오분류 방지: 학습 의도 키워드("설명", "원리" 등) 감지 시 learn으로 보정
@@ -197,7 +175,7 @@
       ├── [Responder]  (chat 경로 — 인사·잡담 즉시 응답)
       │     - LLM 1회 호출로 캐주얼 응답 생성 → END
       │
-      ├── [Retrieval Agent]  (learn / escape 경로)
+      ├── **[Retrieval Agent]**  (learn / escape 경로)
       │     - BGE-M3 임베딩 → Elasticsearch 하이브리드 검색
       │     - 코사인 유사도 ≥ 0.4 필터링 → RRF 리랭킹
       │
@@ -206,14 +184,14 @@
       │     - <answer> / <feedback> / <scaffold> / <question> 4섹션 구조화 출력
       │       · <scaffold>: 다음 질문에 앞서 필요한 사전 지식·힌트 제공 (없으면 생략)
       │     - Deep 모드 / 개념 정의 질문 시 Tavily 웹 검색 보강
-      │     - _MAX_TURNS {0:2, 1:4, 2:6} 기준 반문 한도 초과 시 직접 설명 전환
+      │     - _MAX_TURNS {"light":2, "standard":4, "deep":6} 기준 반문 한도 초과 시 직접 설명 전환
       │
       ├── [Tool Agent]  (tools 경로)
       │     - generate_quiz / save_weakness / schedule_review / update_user_profile 호출
       │
       ├── [Composer]
       │     - route별 출력 조합:
-      │       learn  → <feedback> + <question> 노출
+      │       learn  → <feedback> + <scaffold> + <question> 노출
       │       escape → <answer> 노출 (퀴즈 중: 정답 비공개 + 힌트 안내)
       │       tools  → 도구 결과 합성 (퀴즈 생성·채점 포함)
       │       chat   → Responder 직접 출력
@@ -268,22 +246,61 @@
 
 ### 4.4 LangGraph 에이전트 그래프
 
-### 4.5 에이전트 상태 스키마 (AgentState)
+```mermaid
+flowchart TD
+    START([START]) --> router
 
-| 필드 | 타입 | 설명 |
+    router -->|"route=learn\n또는 escape (quiz 없음)"| retrieval_agent
+    router -->|"route=chat"| responder
+    router -->|"route=tools"| tool_agent
+    router -->|"route=escape\n+ pending_quiz"| composer
+
+    retrieval_agent --> socratic_agent
+    socratic_agent --> tool_agent
+    tool_agent --> composer
+
+    composer -->|"should_review = True"| reviewer
+    composer -->|"should_review = False"| END([END])
+
+    reviewer -->|"pass=False &\nretry < MAX_RETRIES(2)"| socratic_agent
+    reviewer -->|"pass=True 또는\n최대 재시도 초과"| END
+
+    responder --> END
+
+    subgraph "서브에이전트 체인 (learn / escape)"
+        retrieval_agent["retrieval_agent\n벡터 스토어 검색"]
+        socratic_agent["socratic_agent\n소크라테스식 응답 생성"]
+        tool_agent["tool_agent\n학습 도구 호출"]
+    end
+
+    subgraph "조합 & 품질 검사"
+        composer["composer\n서브에이전트 결과 조합"]
+        reviewer["reviewer\n품질 검사 (조건부)"]
+    end
+
+    router["router\n쿼리 재작성 + 라우팅"]
+    responder["responder\n캐주얼 응답 (chat)"]
+
+    style router fill:#4A90D9,color:#fff
+    style retrieval_agent fill:#7B68EE,color:#fff
+    style socratic_agent fill:#7B68EE,color:#fff
+    style tool_agent fill:#7B68EE,color:#fff
+    style composer fill:#50C878,color:#fff
+    style reviewer fill:#FF8C00,color:#fff
+    style responder fill:#20B2AA,color:#fff
+    style END fill:#888,color:#fff
+    style START fill:#333,color:#fff
+```
+
+| 노드 | 역할 | 경로 |
 | --- | --- | --- |
-| `messages` | `List[Dict]` | 대화 턴 히스토리 |
-| `rewritten_query` | `str` | 문맥 복원된 Standalone 쿼리 |
-| `socratic_depth` | `int` | 0=Light / 1=Standard / 2=Deep |
-| `frustration_level` | `int` | 좌절 수준 (0~2, Router LLM이 대화 맥락 기반으로 판단) |
-| `active_agents` | `List[str]` | Router가 결정한 Sub Agent 목록 |
-| `retrieved_docs` | `List[Dict]` | 유사도 필터 통과 강의 청크 |
-| `tutor_response` | `str` | Socratic Agent의 구조화 출력 |
-| `evaluation` | `Dict` | 4축 점수 + 피드백 |
-| `route` | `str` | learn / escape / tools / chat |
-| `pending_quiz` | `List[Dict]` | 진행 중인 퀴즈 항목 |
-| `force_explain` | `bool` | 반문 한도 초과 시 직접 설명 전환 플래그 |
-| `user_profile` | `Dict` | 학습 스타일·어조·배경 |
+| **router** | 쿼리 재작성 + `learn` / `chat` / `tools` / `escape` 분류 | 진입점 |
+| **retrieval_agent** | Elasticsearch 하이브리드 검색으로 관련 청크 수집 | learn, escape(quiz 없음) |
+| **socratic_agent** | 소크라테스식 질문 생성 (Adaptive Depth 반영) | learn, escape(quiz 없음), reviewer 재시도 |
+| **tool_agent** | `generate_quiz` / `schedule_review` / `save_weakness` 도구 호출 | learn, tools |
+| **composer** | 서브에이전트 결과 조합 → 최종 응답 초안 생성 | 모든 경로 합류점 |
+| **reviewer** | 소크라테스 원칙 준수 여부 품질 검사, 실패 시 재시도 유발 | learn (조건부) |
+| **responder** | 인사·잡담 즉시 응답 (retrieval 스킵) | chat |
 
 ---
 
@@ -382,37 +399,21 @@ SocrAItes 실행 화면
 
 - Sub Agent 분리로 턴당 LLM 호출 증가 → 응답 완료 시간 늘어남
 - Router에 frustration_level·suggested_depth를 통합하여 별도 LLM 호출을 줄였으나, 소크라테스 응답·Reviewer 재시도 등으로 평균 2~4회 호출 발생
-- SSE 스트리밍으로 체감 대기 시간은 줄였으나 실제 완료 시간은 증가함
-- BGE-M3 로컬 임베딩 모델(570MB)이 CPU 환경에서 첫 로드 시 15~30초 소요됨
-
-**평가 지표**
-
-- RAGAS 기반 Faithfulness·반문 비율 등 객관적 지표를 자동화 테스트로 검증하지 못함
-- 시나리오 기반 수동 평가에 그침
 
 **다중 사용자 및 세션**
 
 - 현재 SQLite 단일 DB 구조는 다중 세션·다중 사용자 환경에서 병목 발생 가능
 - PostgreSQL 전환 또는 Redis 세션 캐시 도입 필요
 
-### 6.3 향후 개선 방향
+### 6.3 팀원 소감
 
-| 우선순위 | 개선 항목 |
-| --- | --- |
-| 높음 | 자동화 평가 파이프라인 (RAGAS 통합) |
-| 높음 | 멀티 사용자 지원 (세션 분리 + PostgreSQL) |
-| 중간 | 임베딩 서버 분리 (응답 지연 감소) |
-| 중간 | 주간 학습 리포트 UI 개선 및 시각화 |
-| 낮음 | 모바일 최적화 UI |
-| 낮음 | 강의자료 이미지/수식 청킹 개선 (현재 텍스트만 처리) |
+> 조현호: 소크라테스 방식이 기술적으로도 철학적으로도 어렵다는 걸 직접 구현하면서 느꼈다. "정답을 안 알려주는 AI"를 만들기 위해 정답이 무엇인지를 AI가 정확히 알아야 한다는 역설이 프롬프트 설계의 핵심 난관이었다.
 
-### 6.4 팀원 소감
+> 권지수: Elasticsearch 마이그레이션이 가장 큰 기술적 도전이었지만, 한국어 형태소 분석기(Nori)와 Dense 벡터 검색을 결합한 결과가 체감되게 좋아져서 보람 있었다.
 
-> 소크라테스 방식이 기술적으로도 철학적으로도 어렵다는 걸 직접 구현하면서 느꼈다. "정답을 안 알려주는 AI"를 만들기 위해 정답이 무엇인지를 AI가 정확히 알아야 한다는 역설이 프롬프트 설계의 핵심 난관이었다.
+> 김우림: LangGraph로 에이전트를 계층화하면서 "역할 분리가 곧 디버깅 편의"라는 것을 실감했다. 처음엔 복잡해 보였지만 노드별 로그 덕분에 버그 원인을 빠르게 찾을 수 있었다.
 
-> Elasticsearch 마이그레이션이 가장 큰 기술적 도전이었지만, 한국어 형태소 분석기(Nori)와 Dense 벡터 검색을 결합한 결과가 체감되게 좋아져서 보람 있었다.
-
-> LangGraph로 에이전트를 계층화하면서 "역할 분리가 곧 디버깅 편의"라는 것을 실감했다. 처음엔 복잡해 보였지만 노드별 로그 덕분에 버그 원인을 빠르게 찾을 수 있었다.
+> 신승윤: LangGraph로 에이전트를 계층화하면서 "역할 분리가 곧 디버깅 편의"라는 것을 실감했다. 처음엔 복잡해 보였지만 노드별 로그 덕분에 버그 원인을 빠르게 찾을 수 있었다.
 
 ---
 
