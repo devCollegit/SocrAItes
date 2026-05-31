@@ -5,6 +5,7 @@
 SocrAItes(소크라테스)는 단순한 정답 제공을 넘어, 소크라테스식 문답법을 통해 학습자 스스로 개념을 깨우치도록 돕는 RAG 기반 AI Agent입니다. 
 
 ![SocrAItes 실행 화면](docs/images/screenshot.png)
+![SocrAItes 개인화 화면](docs/images/screenshot_personalization.png)
 
 ## 🚀 프로젝트 개요
 - **목적:** 대학원생들이 강의 자료를 깊이 있게 이해하고 비판적 사고를 기를 수 있도록 돕는 메타인지 학습 도우미

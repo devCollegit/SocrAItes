@@ -241,8 +241,22 @@ async def chat(request: ChatRequest):
                     "quiz_data": quiz_data,
                 }
                 yield f"data: {json.dumps(final_data, ensure_ascii=False)}\n\n"
-                # 참고: 백그라운드 프로필 업데이트는 tool_agent 내부에서
-                # threading.Thread(daemon=True)로 처리되므로 여기서 별도 트리거 불필요.
+                # 매 턴마다 백그라운드 프로필 업데이트를 전역적으로 실행 (모든 라우트 포함)
+                import threading
+                from src.agent.profile_updater import update_profile_in_background
+                
+                # assistant 응답이 포함된 최신 히스토리 구성
+                full_history = list(current_state.get("messages", []))
+                if answer:
+                    full_history.append({"role": "assistant", "content": answer})
+                    
+                bg_thread = threading.Thread(
+                    target=update_profile_in_background,
+                    args=(session_id, user_id, full_history),
+                    daemon=True,
+                )
+                bg_thread.start()
+                logger.info(f"전역 백그라운드 프로필 업데이트 thread 시작 (session={session_id}).")
             except Exception as e:
                 logger.error(f"[/chat] Stream Error: {e}")
                 yield f"data: {json.dumps({'type': 'error', 'detail': str(e)}, ensure_ascii=False)}\n\n"

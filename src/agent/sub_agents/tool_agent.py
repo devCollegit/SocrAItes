@@ -62,7 +62,8 @@ IMPORTANT:
 - 도구가 필요 없으면 "No tools needed."로 응답.
 
 Current subtask: {subtask}
-Frustration level: {frustration_level}"""
+Frustration level: {frustration_level}
+Current time (KST): {current_time}"""
 
 # "tools" route에서 명시적 도구 요청을 처리하는 간결한 프롬프트
 DIRECT_TOOL_PROMPT = """You are the Tool Agent for SocrAItes.
@@ -70,102 +71,8 @@ DIRECT_TOOL_PROMPT = """You are the Tool Agent for SocrAItes.
 학생의 명시적 도구 요청을 즉시 처리하세요. 질문 없이 바로 도구를 호출하세요.
 
 요청: {last_message}
-Subtask: {subtask}"""
-
-# 백그라운드 프로필 업데이트용 프롬프트 (daemon thread에서 실행)
-BACKGROUND_PROMPT = """You are the Background Profile Updater for SocrAItes.
-
-최근 대화를 분석해 `update_user_profile` 도구를 호출해 학생 프로필을 업데이트하세요.
-
-반드시 아래 두 요약을 관리하세요:
-- strengths_summary: 현재 개념 숙달 목록 요약 (1-3문장)
-- weaknesses_summary: 현재 개념 혼동/오류 요약 (1-3문장)
-
-업데이트 규칙 (CRITICAL):
-1. 개념 오류/혼동/잘못된 이해 → weaknesses_summary에 추가/업데이트
-2. 개념 정확 설명/오개념 자가 수정/숙달 → strengths_summary에 추가, weaknesses_summary에서 해당 항목 제거
-3. 간결 유지: 최대 3문장. 오래된/해결된 항목은 삭제.
-4. 업데이트할 내용이 있으면 반드시 `update_user_profile` 호출. 텍스트 설명 불필요.
-
-현재 프로필:
-- Academic Background: {academic_background}
-- Learning Style: {learning_style}
-- Preferred Tone: {preferred_tone}
-- AI Notes: {profile_notes}
-- Current Strengths Summary: "{current_strengths_summary}"
-- Current Weaknesses Summary: "{current_weaknesses_summary}"
-
-Session ID: {session_id}
-User ID: {user_id}"""
-
-# ──────────────────────────────────────────────────────────────────────────────
-# 백그라운드 프로필 업데이트
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _update_profile_in_background(
-    session_id: str,
-    user_id: str,
-    messages: List[Dict[str, Any]],
-) -> None:
-    """API 응답 전송 후 daemon thread에서 사용자 프로필을 묵시적으로 업데이트한다.
-
-    LLM + update_user_profile 도구를 사용해 강점/약점 요약을 자동으로 갱신한다.
-    daemon=True로 실행하므로 메인 프로세스 종료 시 함께 종료된다.
-    """
-    logger.info(
-        f"--- [Background Profile Update] session={session_id}, user={user_id} ---"
-    )
-
-    # 현재 프로필 로드 (백그라운드이므로 실패해도 무시)
-    try:
-        from src.db.database import get_user_profile
-        profile = get_user_profile(user_id)
-    except Exception as e:
-        logger.error(f"[BackgroundUpdate] 프로필 로드 실패: {e}")
-        return
-
-    system_content = BACKGROUND_PROMPT.format(
-        session_id=session_id,
-        user_id=user_id,
-        academic_background=profile.get("academic_background", "대학원생"),
-        learning_style=profile.get("learning_style", "conceptual"),
-        preferred_tone=profile.get("preferred_tone", "encouraging"),
-        profile_notes=profile.get("notes", ""),
-        current_strengths_summary=profile.get("strengths_summary", ""),
-        current_weaknesses_summary=profile.get("weaknesses_summary", ""),
-    )
-
-    # 대화 히스토리를 LangChain 메시지 형식으로 변환
-    messages_for_llm = [SystemMessage(content=system_content)]
-    for m in messages:
-        if m["role"] == "user":
-            messages_for_llm.append(HumanMessage(content=m["content"]))
-        elif m["role"] == "assistant":
-            messages_for_llm.append(AIMessage(content=m["content"]))
-
-    try:
-        # update_user_profile 도구만 바인딩해서 프로필 업데이트에 집중
-        from src.tools.learning_tools import LANGCHAIN_TOOLS as ALL_TOOLS
-        profiling_tools = [t for t in ALL_TOOLS if t.name == "update_user_profile"]
-
-        response = llm.bind_tools(profiling_tools).invoke(messages_for_llm)
-        tool_calls = _extract_tool_calls(response)
-
-        if tool_calls:
-            # user_id를 모든 tool call에 주입
-            for tc in tool_calls:
-                args = tc.get("args", {})
-                if isinstance(args, dict):
-                    if tc.get("name") == "update_user_profile":
-                        args["user_id"] = user_id
-                    tc["args"] = args
-            logger.info(f"[BackgroundUpdate] {len(tool_calls)}개 프로필 도구 실행 중...")
-            results = _run_tool_calls(tool_calls)
-            logger.info(f"[BackgroundUpdate] 완료: {results}")
-        else:
-            logger.info("[BackgroundUpdate] 업데이트할 프로필 변경 없음.")
-    except Exception as e:
-        logger.error(f"[BackgroundUpdate] 실패: {e}")
+Subtask: {subtask}
+Current time (KST): {current_time}"""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -204,18 +111,24 @@ def tool_agent(state: AgentState) -> AgentState:
     history = state.get("messages", [])
     last_msg = history[-1]["content"] if history else ""
 
+    from datetime import datetime, timezone, timedelta
+    KST = timezone(timedelta(hours=9))
+    current_time_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M (%A)")
+
     # ── route별 프롬프트 선택 ─────────────────────────────────────
     if route == "tools":
         # "tools" route: 명시적 도구 요청 — 간결한 프롬프트로 바로 실행
         system_content = DIRECT_TOOL_PROMPT.format(
             last_message=last_msg,
             subtask=subtask,
+            current_time=current_time_str,
         )
     else:
         # "learn" route: 대화 분석 후 적절한 도구 선택 — 상세 프롬프트 사용
         system_content = LEARN_TOOL_PROMPT.format(
             subtask=subtask,
             frustration_level=frustration_level,
+            current_time=current_time_str,
         )
 
     # ── LLM에 전달할 메시지 조합 ──────────────────────────────────
@@ -267,18 +180,5 @@ def tool_agent(state: AgentState) -> AgentState:
         response=analysis_text,
         decision={"tool_calls": len(tool_calls), "results": tool_results},
     )
-
-    # ── 백그라운드 프로필 업데이트 ───────────────────────────────
-    # 도구 실행 완료 후 daemon thread로 프로필 요약 업데이트 (응답 지연 없음)
-    if session_id:
-        # 현재 대화 + 최신 assistant 응답(아직 없으므로 analysis_text 사용)을 전달
-        full_history = list(history)
-        bg_thread = threading.Thread(
-            target=_update_profile_in_background,
-            args=(session_id, user_id, full_history),
-            daemon=True,  # 메인 프로세스 종료 시 자동 종료
-        )
-        bg_thread.start()
-        logger.info(f"백그라운드 프로필 업데이트 thread 시작 (session={session_id}).")
 
     return state
