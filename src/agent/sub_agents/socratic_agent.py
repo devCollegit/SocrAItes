@@ -173,7 +173,9 @@ Lecture context:
 ---
 
 Conversation history:
-{history}"""
+{history}
+
+Current time (KST): {current_time}"""
 
 # ──────────────────────────────────────────────────────────────────────────────
 # 깊이별 모드 지침
@@ -383,6 +385,10 @@ def socratic_agent(state: AgentState) -> AgentState:
     # ── 반문 한도 초과 여부를 state에 기록 (composer에서 처리) ───
     state["force_explain"] = turns_left <= 0
 
+    from datetime import datetime, timezone, timedelta
+    KST = timezone(timedelta(hours=9))
+    current_time_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M (%A)")
+
     # ── 시스템 프롬프트 조합 ─────────────────────────────────────
     system_content = summary_override + SOCRATIC_PROMPT.format(
         depth=depth,
@@ -397,6 +403,7 @@ def socratic_agent(state: AgentState) -> AgentState:
         weaknesses_summary=weaknesses_summary,
         context=context,
         history=history_text,
+        current_time=current_time_str,
     )
 
     # ── LLM 호출 ─────────────────────────────────────────────────

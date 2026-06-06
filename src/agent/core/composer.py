@@ -149,6 +149,10 @@ def composer(state: AgentState) -> AgentState:
             _log_trace(step="Composer", purpose="퀴즈 포맷팅.", decision="pending_quiz 설정.")
             return state
 
+        from datetime import datetime, timezone, timedelta
+        KST = timezone(timedelta(hours=9))
+        current_time_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M (%A)")
+
         # 그 외 도구 결과 (save_weakness, save_strength, schedule_review) → LLM 합성
         synthesis_prompt = (
             "You are SocrAItes. 도구 실행 결과를 바탕으로 간결한 한국어 응답을 작성하세요.\n\n"
@@ -156,6 +160,7 @@ def composer(state: AgentState) -> AgentState:
             "Rules:\n"
             "1. 약점/강점/일정이 저장되었으면 간단히 확인하고 소크라테스식 후속 질문 1개를 달아주세요.\n"
             "2. 간결하고 따뜻한 어조로 작성하세요.\n"
+            f"Current time (KST): {current_time_str}\n"
         )
         state["response"] = _get_content(
             llm.invoke([SystemMessage(content=synthesis_prompt), HumanMessage(content="최종 응답을 작성해줘.")])
@@ -221,9 +226,15 @@ def composer(state: AgentState) -> AgentState:
     # ── 6. 폴백 LLM 생성 ─────────────────────────────────────────
     docs = state.get("retrieved_docs", [])
     context = "\n".join(d["text"] for d in docs) if docs else "강의 자료 없음."
+    
+    from datetime import datetime, timezone, timedelta
+    KST = timezone(timedelta(hours=9))
+    current_time_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M (%A)")
+    
     fallback_prompt = (
         f"You are SocrAItes. 아래 강의 자료를 바탕으로 간결한 소크라테스식 힌트와 질문을 "
-        f"한국어로 생성하세요.\nContext: {context[:500]}\nStudent: {last_msg}"
+        f"한국어로 생성하세요.\nContext: {context[:500]}\nStudent: {last_msg}\n"
+        f"Current time (KST): {current_time_str}"
     )
     state["response"] = _get_content(llm.invoke([HumanMessage(content=fallback_prompt)]))
     state["tool_results"] = []
