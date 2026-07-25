@@ -1,0 +1,130 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SocrAItes Production Docker Compose
+# Services: app, elasticsearch, postgres, redis, nginx
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ─── FastAPI Application ──────────────────────────────────────────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    container_name: socraites-app
+    restart: unless-stopped
+    environment:
+      - APP_ENV=${APP_ENV:-development}
+      - DATABASE_URL=postgresql://socraites:${POSTGRES_PASSWORD:-socraites}@postgres:5432/socraites
+      - ES_URL=http://elasticsearch:9200
+      - REDIS_URL=redis://redis:6379/0
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8000,http://localhost:3000}
+    ports:
+      - "8000:8000"
+    volumes:
+      - app_data:/app/data
+      - app_uploads:/app/temp_uploads
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
+
+  # ─── Elasticsearch (Vector DB) ────────────────────────────────────────────
+  elasticsearch:
+    build:
+      context: ./docker/elasticsearch
+    container_name: socraites-es
+    restart: unless-stopped
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200/_cluster/health | grep -q '\"status\":\"green\\|yellow\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ─── PostgreSQL ───────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: socraites-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: socraites
+      POSTGRES_USER: socraites
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-socraites}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U socraites -d socraites"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─── Redis (Cache & Rate Limiting) ────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: socraites-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── Nginx (Reverse Proxy & SSL) ─────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: socraites-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      app:
+        condition: service_healthy
+
+  # ─── Kibana (Dev only - monitoring) ──────────────────────────────────────
+  kibana:
+    image: kibana:8.13.0
+    container_name: socraites-kibana
+    profiles:
+      - dev
+    ports:
+      - "5601:5601"
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+
+volumes:
+  es_data:
+  pg_data:
+  redis_data:
+  app_data:
+  app_uploads:
