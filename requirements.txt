@@ -5,6 +5,7 @@ langchain-openai
 elasticsearch[async]>=8.13.0,<9.0.0
 FlagEmbedding
 pydantic
+pydantic-settings
 python-dotenv
 streamlit
 fastapi
@@ -12,3 +13,14 @@ uvicorn
 PyMuPDF
 tavily-python
 langchain-community
+# ─── Auth & Security ──────────────────────────────────────────────────────────
+PyJWT>=2.12.0
+python-multipart>=0.0.32
+# ─── HTTP Client ──────────────────────────────────────────────────────────────
+httpx>=0.25.0
+# ─── Testing (dev) ────────────────────────────────────────────────────────────
+# pytest>=7.4.0
+# pytest-asyncio>=0.21.0
+# pytest-cov>=4.1.0
+# ruff>=0.1.0
+

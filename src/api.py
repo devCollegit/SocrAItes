@@ -19,13 +19,24 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Logging setup
+# Logging setup (structured JSON in production)
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+from src.config.settings import get_settings
+
+_settings = get_settings()
+
+if _settings.is_production:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='{"time":"%(asctime)s","level":"%(levelname)s","logger":"%(name)s","message":"%(message)s"}',
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    )
+else:
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 logger = logging.getLogger("socraites.api")
 
 from .agent.graph import GRAPH
@@ -51,8 +62,24 @@ from .db.database import (
     save_report,
 )
 
-app = FastAPI(title="SocrAItes API")
+app = FastAPI(title="SocrAItes API", version="1.0.0")
 init_db()
+
+# ---------------------------------------------------------------------------
+# Include routers
+# ---------------------------------------------------------------------------
+from src.auth.router import router as auth_router
+from src.health import router as health_router
+
+app.include_router(auth_router)
+app.include_router(health_router)
+
+# ---------------------------------------------------------------------------
+# Middleware: Rate Limiting (before CORS)
+# ---------------------------------------------------------------------------
+if _settings.is_production:
+    from src.middleware.rate_limiter import RateLimitMiddleware
+    app.add_middleware(RateLimitMiddleware)
 
 
 @app.middleware("http")
@@ -88,10 +115,10 @@ async def read_index():
         },
     )
 
-# Enable CORS for frontend development
+# Enable CORS (tightened in production via settings)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_settings.effective_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
