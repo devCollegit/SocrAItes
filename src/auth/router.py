@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import uuid
 from typing import Optional
@@ -44,11 +43,21 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
-# ─── Password hashing (simple SHA-256 + salt; replace with bcrypt in production) ─
+# ─── Password hashing (bcrypt) ────────────────────────────────────────────────
 
 def _hash_password(password: str, salt: str = "") -> str:
-    """Hash password with SHA-256. In production, use bcrypt or argon2."""
-    return hashlib.sha256(f"{salt}{password}".encode()).hexdigest()
+    """Hash password using bcrypt for secure password storage."""
+    import bcrypt
+    # Combine email (salt) with password for additional uniqueness
+    combined = f"{salt}{password}".encode()
+    return bcrypt.hashpw(combined, bcrypt.gensalt()).decode()
+
+
+def _verify_password(password: str, hashed: str, salt: str = "") -> bool:
+    """Verify a password against a bcrypt hash."""
+    import bcrypt
+    combined = f"{salt}{password}".encode()
+    return bcrypt.checkpw(combined, hashed.encode())
 
 
 # ─── Database helpers ─────────────────────────────────────────────────────────
@@ -137,8 +146,7 @@ async def login(req: LoginRequest):
             detail="Invalid email or password",
         )
 
-    password_hash = _hash_password(req.password, salt=req.email)
-    if user["password_hash"] != password_hash:
+    if not _verify_password(req.password, user["password_hash"], salt=req.email):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",

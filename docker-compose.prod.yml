@@ -14,7 +14,7 @@ services:
     restart: unless-stopped
     environment:
       - APP_ENV=${APP_ENV:-development}
-      - DATABASE_URL=******postgres:5432/socraites
+      - DATABASE_URL=postgresql://socraites:${POSTGRES_PASSWORD:-socraites}@postgres:5432/socraites
       - ES_URL=http://elasticsearch:9200
       - REDIS_URL=redis://redis:6379/0
       - OPENAI_API_KEY=${OPENAI_API_KEY}
